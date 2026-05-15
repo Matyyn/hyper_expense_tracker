@@ -30,7 +30,14 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#34d399"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

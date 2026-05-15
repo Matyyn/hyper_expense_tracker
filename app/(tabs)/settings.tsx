@@ -8,6 +8,7 @@ import { useNotification } from '../../components/NotificationProvider';
 import { useCurrency } from '../../components/CurrencyProvider';
 import { supabase } from '../../lib/supabase';
 import { CURRENCY_LIST, CurrencyCode } from '../../lib/currency';
+import { scheduleDailyReminder, cancelDailyReminder, requestNotificationPermissions } from '../../lib/notifications';
 
 function SectionTitle({ icon, label, color = '#34d399' }: { icon: React.ComponentProps<typeof FontAwesome>['name']; label: string; color?: string }) {
   return (
@@ -75,7 +76,17 @@ export default function SettingsScreen() {
     try {
       const { error } = await supabase.auth.updateUser({ data: { reminder_enabled: value } });
       if (error) throw error;
-      showNotification(value ? 'Reminder banner enabled' : 'Reminder banner disabled', value ? 'success' : 'info');
+      if (value) {
+        const granted = await scheduleDailyReminder(20, 0);
+        if (!granted) {
+          showNotification('Enable notifications in device settings', 'error');
+          return;
+        }
+        showNotification('Daily reminder set for 8:00 PM', 'success');
+      } else {
+        await cancelDailyReminder();
+        showNotification('Reminder disabled', 'info');
+      }
     } catch (e: any) {
       setReminderOn(!value);
       showNotification(e.message || 'Could not save preference', 'error');

@@ -1,27 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
-import * as Linking from 'expo-linking';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useNotification } from '../../components/NotificationProvider';
 import { supabase } from '../../lib/supabase';
-
-function parseHash(url: string): Record<string, string> {
-  const result: Record<string, string> = {};
-  const hashIdx = url.indexOf('#');
-  if (hashIdx === -1) return result;
-  const hash = url.slice(hashIdx + 1);
-  hash.split('&').forEach(part => {
-    const [k, v] = part.split('=');
-    if (k) result[decodeURIComponent(k)] = decodeURIComponent(v || '');
-  });
-  return result;
-}
 
 export default function ResetPasswordScreen() {
   const router = useRouter();
   const { showNotification } = useNotification();
+  const { token } = useLocalSearchParams<{ token: string }>();
 
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -29,40 +17,18 @@ export default function ResetPasswordScreen() {
   const [busy, setBusy] = useState(false);
   const [tokenReady, setTokenReady] = useState(false);
 
-  // Try to restore the recovery session from the deep-link URL
   useEffect(() => {
-    let sub: { remove: () => void } | null = null;
-
-    const apply = async (url: string | null) => {
-      if (!url) return;
-      const params = parseHash(url);
-      const access_token = params['access_token'];
-      const refresh_token = params['refresh_token'];
-      const type = params['type'];
-      if (access_token && refresh_token && type === 'recovery') {
-        const { error } = await supabase.auth.setSession({ access_token, refresh_token });
-        if (!error) {
-          setTokenReady(true);
-        } else {
-          showNotification(error.message, 'error');
-        }
-      }
-    };
-
-    (async () => {
-      const initial = await Linking.getInitialURL();
-      await apply(initial);
-    })();
-
-    sub = Linking.addEventListener('url', (e) => { apply(e.url); });
-
-    // If session was already set (auth state may have changed before mount), allow proceeding
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) setTokenReady(true);
-    });
-
-    return () => { sub?.remove(); };
-  }, []);
+    if (token) {
+      supabase.auth.verifyOtp({ token_hash: token, type: 'recovery' }).then(({ error }) => {
+        if (!error) setTokenReady(true);
+        else setTokenReady(false);
+      });
+    } else {
+      supabase.auth.getSession().then(({ data }) => {
+        if (data.session) setTokenReady(true);
+      });
+    }
+  }, [token]);
 
   const handleReset = async () => {
     if (password.length < 6) {
@@ -77,7 +43,7 @@ export default function ResetPasswordScreen() {
     try {
       const { error } = await supabase.auth.updateUser({ password });
       if (error) throw error;
-      showNotification('Password updated — please sign in', 'success');
+      showNotification('Password updated — sign in with new password', 'success');
       await supabase.auth.signOut();
       router.replace('/(auth)/login');
     } catch (e: any) {
@@ -110,7 +76,7 @@ export default function ResetPasswordScreen() {
           {!tokenReady ? (
             <View className="items-center mb-6">
               <ActivityIndicator color="#34d399" />
-              <Text className="text-stone-500 mt-3 text-xs font-semibold uppercase tracking-widest">Verifying reset link...</Text>
+              <Text className="text-stone-500 mt-3 text-xs font-semibold uppercase tracking-widest">Preparing...</Text>
             </View>
           ) : (
             <>
@@ -121,6 +87,7 @@ export default function ResetPasswordScreen() {
                   value={password}
                   onChangeText={setPassword}
                   secureTextEntry={hidden}
+                  autoFocus
                   className="flex-1 text-white text-sm px-5 py-4"
                 />
                 <TouchableOpacity onPress={() => setHidden(h => !h)} className="px-4 py-4">
@@ -136,6 +103,7 @@ export default function ResetPasswordScreen() {
                   onChangeText={setConfirm}
                   secureTextEntry={hidden}
                   onSubmitEditing={handleReset}
+                  returnKeyType="done"
                   className="flex-1 text-white text-sm px-5 py-4"
                 />
               </View>
@@ -145,7 +113,9 @@ export default function ResetPasswordScreen() {
                 disabled={busy}
                 className={`py-4 rounded-2xl items-center mb-3 ${busy ? 'bg-emerald-800' : 'bg-emerald-600 active:bg-emerald-500'}`}
               >
-                {busy ? <ActivityIndicator color="white" /> : <Text className="text-white text-sm font-bold uppercase tracking-wider">Update Password</Text>}
+                {busy
+                  ? <ActivityIndicator color="white" />
+                  : <Text className="text-white text-sm font-bold uppercase tracking-wider">Update Password</Text>}
               </TouchableOpacity>
             </>
           )}

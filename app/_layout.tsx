@@ -2,9 +2,10 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { DarkTheme, ThemeProvider } from '@react-navigation/native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useFonts } from 'expo-font';
+import * as Notifications from 'expo-notifications';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { View, ActivityIndicator, Text } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import 'react-native-reanimated';
@@ -73,6 +74,25 @@ function AuthHandler() {
   const { session, isInitialized } = useAuth();
   const segments = useSegments();
   const router = useRouter();
+  const notifListener = useRef<Notifications.EventSubscription>();
+  const responseListener = useRef<Notifications.EventSubscription>();
+
+  useEffect(() => {
+    notifListener.current = Notifications.addNotificationReceivedListener(() => {
+      // notification received while app is foregrounded — handled by setNotificationHandler
+    });
+
+    responseListener.current = Notifications.addNotificationResponseReceivedListener(response => {
+      const screen = response.notification.request.content.data?.screen as string | undefined;
+      if (screen === 'analytics') router.push('/(tabs)/analytics');
+      else router.push('/(tabs)');
+    });
+
+    return () => {
+      notifListener.current?.remove();
+      responseListener.current?.remove();
+    };
+  }, []);
 
   useEffect(() => {
     if (!isInitialized) return;

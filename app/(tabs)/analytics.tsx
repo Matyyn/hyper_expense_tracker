@@ -30,13 +30,13 @@ export default function AnalyticsScreen() {
   const { showNotification } = useNotification();
   const [refreshing, setRefreshing] = useState(false);
   const { expenses, weeklyExpenses, isLoading, metrics, categoryMap, categories, categorySpend } = useExpenseSync(user?.id);
-  const { height } = useWindowDimensions();
   const { totalSpentMonthly, monthlyBudget } = metrics;
 
   const initialBudgets: Record<string, number> = (user?.user_metadata?.category_budgets as Record<string, number>) || {};
   const [showBudgetsModal, setShowBudgetsModal] = useState(false);
   const [budgetDrafts, setBudgetDrafts] = useState<Record<string, string>>({});
   const [savingBudgets, setSavingBudgets] = useState(false);
+  const [weekChartView, setWeekChartView] = useState<'weekly' | 'monthly'>('monthly');
 
   useEffect(() => {
     const map: Record<string, string> = {};
@@ -54,6 +54,7 @@ export default function AnalyticsScreen() {
       });
       const { error } = await supabase.auth.updateUser({ data: { category_budgets: cleaned } });
       if (error) throw error;
+      await supabase.auth.refreshSession();
       showNotification('Category budgets saved', 'success');
       setShowBudgetsModal(false);
     } catch (e: any) {
@@ -83,15 +84,32 @@ export default function AnalyticsScreen() {
     limit: initialBudgets[cat],
   })).sort((a, b) => b.amount - a.amount);
 
-  const dayOfMonth = new Date().getDate();
-  const dailyAvg = totalSpentMonthly / dayOfMonth;
+  const spendingDays = new Set(
+    expenses.filter(e => e.created_at).map(e => new Date(e.created_at!).toDateString())
+  ).size;
+  const dailyAvg = spendingDays > 0 ? totalSpentMonthly / spendingDays : 0;
+
+  const today = new Date();
+  const currentWeekOfMonth = Math.ceil(today.getDate() / 7);
+
+  const weeklyMonthData = [0, 0, 0, 0];
+  expenses.forEach(exp => {
+    if (exp.created_at) {
+      const d = new Date(exp.created_at);
+      if (d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear()) {
+        const week = Math.min(Math.ceil(d.getDate() / 7), 4) - 1;
+        weeklyMonthData[week] += Number(exp.amount);
+      }
+    }
+  });
+  const maxWeekAmount = Math.max(...weeklyMonthData, 1);
 
   const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const weekData = new Array(7).fill(0);
+  const weekDayData = new Array(7).fill(0);
   weeklyExpenses.forEach(exp => {
-    if (exp.created_at) { weekData[new Date(exp.created_at).getDay()] += Number(exp.amount); }
+    if (exp.created_at) weekDayData[new Date(exp.created_at).getDay()] += Number(exp.amount);
   });
-  const maxDay = Math.max(...weekData, 1);
+  const maxDay = Math.max(...weekDayData, 1);
 
   const budgetUsedPct = Math.min(100, (totalSpentMonthly / Math.max(monthlyBudget, 1)) * 100);
 
@@ -108,7 +126,7 @@ export default function AnalyticsScreen() {
     <SafeAreaView className="flex-1 bg-black">
       <ScrollView
         className="px-6"
-        contentContainerStyle={{ minHeight: height * 0.8, paddingBottom: 24 }}
+        contentContainerStyle={{ paddingBottom: 32 }}
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#34d399" />}
       >
@@ -196,26 +214,94 @@ export default function AnalyticsScreen() {
         </View>
 
         <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-5">
-          <SectionTitle icon="line-chart" label="This Week's Trend" />
-          <View className="flex-row justify-between items-end h-24 mt-1">
-            {weekData.map((amount, idx) => {
-              const barH = (amount / maxDay) * 100;
-              const isCurrent = idx === new Date().getDay();
-              return (
-                <View key={idx} className="items-center flex-1">
-                  {amount > 0 && (
-                    <Text className="text-stone-500 text-[10px] font-semibold mb-1" numberOfLines={1}>
-                      {Math.round(amount / 1000) >= 1 ? `${(amount / 1000).toFixed(0)}k` : Math.round(amount)}
-                    </Text>
-                  )}
-                  <View className="w-5 bg-stone-800/60 rounded-t-md items-end justify-end overflow-hidden" style={{ height: '100%' }}>
-                    <View className={`w-full rounded-t-md ${isCurrent ? 'bg-rose-500' : 'bg-emerald-600/70'}`} style={{ height: `${barH}%` }} />
-                  </View>
-                  <Text className={`text-[10px] font-semibold mt-2 ${isCurrent ? 'text-rose-400' : 'text-stone-500'}`}>{days[idx]}</Text>
-                </View>
-              );
-            })}
+          <View className="flex-row items-center justify-between mb-4">
+            <View className="flex-row items-center">
+              <View className="w-7 h-7 rounded-lg bg-black border border-stone-800 items-center justify-center mr-3">
+                <FontAwesome name="line-chart" size={12} color="#f43f5e" />
+              </View>
+              <Text className="text-white text-base font-bold tracking-tight">
+                {weekChartView === 'weekly' ? "This Week" : "Monthly Weeks"}
+              </Text>
+            </View>
+            <View className="flex-row bg-black rounded-full p-1 border border-stone-800">
+              {(['weekly', 'monthly'] as const).map(v => (
+                <TouchableOpacity
+                  key={v}
+                  onPress={() => setWeekChartView(v)}
+                  className={`px-3 py-1.5 rounded-full ${weekChartView === v ? 'bg-rose-500' : ''}`}
+                >
+                  <Text className={`text-[11px] font-semibold uppercase tracking-wider ${weekChartView === v ? 'text-white' : 'text-stone-500'}`}>
+                    {v === 'weekly' ? 'Week' : 'Month'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
           </View>
+
+          {weekChartView === 'weekly' ? (
+            <View style={{ height: 180 }} className="mt-2">
+              <View className="flex-row justify-between items-end" style={{ height: 148 }}>
+                {weekDayData.map((amount, idx) => {
+                  const barH = Math.max((amount / maxDay) * 100, amount > 0 ? 4 : 0);
+                  const isCurrent = idx === today.getDay();
+                  return (
+                    <View key={idx} className="items-center flex-1" style={{ height: '100%' }}>
+                      <Text className="text-stone-500 text-[10px] font-semibold mb-1.5" style={{ minHeight: 14 }} numberOfLines={1}>
+                        {amount > 0 ? (Math.round(amount / 1000) >= 1 ? `${(amount / 1000).toFixed(0)}k` : Math.round(amount)) : ''}
+                      </Text>
+                      <View className="flex-1 w-7 bg-stone-800/60 rounded-t-xl overflow-hidden justify-end">
+                        <View className={`w-full rounded-t-xl ${isCurrent ? 'bg-rose-500' : 'bg-emerald-600/70'}`} style={{ height: `${barH}%` }} />
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+              <View className="flex-row justify-between mt-3">
+                {days.map((d, idx) => (
+                  <Text key={idx} className={`flex-1 text-center text-[11px] font-semibold ${idx === today.getDay() ? 'text-rose-400' : 'text-stone-500'}`}>{d}</Text>
+                ))}
+              </View>
+            </View>
+          ) : (
+            <View style={{ height: 180 }} className="mt-2">
+              <View className="flex-row justify-between items-end" style={{ height: 148 }}>
+                {weeklyMonthData.map((amount, idx) => {
+                  const weekNum = idx + 1;
+                  const isCurrent = weekNum === currentWeekOfMonth;
+                  const isFuture = weekNum > currentWeekOfMonth;
+                  const barH = isFuture ? 0 : Math.max((amount / maxWeekAmount) * 100, amount > 0 ? 4 : 0);
+                  return (
+                    <View key={idx} className="items-center flex-1 mx-1" style={{ height: '100%' }}>
+                      <Text className="text-stone-500 text-[10px] font-semibold mb-1.5" style={{ minHeight: 14 }} numberOfLines={1}>
+                        {!isFuture && amount > 0 ? (Math.round(amount / 1000) >= 1 ? `${(amount / 1000).toFixed(0)}k` : Math.round(amount)) : ''}
+                      </Text>
+                      <View className={`flex-1 w-full rounded-t-2xl overflow-hidden justify-end ${isFuture ? 'bg-stone-800/20 border border-stone-800' : 'bg-stone-800/50'}`}>
+                        {isFuture ? (
+                          <View className="flex-1 items-center justify-center">
+                            <FontAwesome name="lock" size={14} color="#292524" />
+                          </View>
+                        ) : (
+                          <View className={`w-full rounded-t-2xl ${isCurrent ? 'bg-rose-500' : 'bg-emerald-600/70'}`} style={{ height: `${barH}%` }} />
+                        )}
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+              <View className="flex-row justify-between mt-3">
+                {weeklyMonthData.map((_, idx) => {
+                  const weekNum = idx + 1;
+                  const isCurrent = weekNum === currentWeekOfMonth;
+                  const isFuture = weekNum > currentWeekOfMonth;
+                  return (
+                    <Text key={idx} className={`flex-1 text-center text-[11px] font-semibold mx-1 ${isCurrent ? 'text-rose-400' : isFuture ? 'text-stone-700' : 'text-stone-500'}`}>
+                      Week {weekNum}
+                    </Text>
+                  );
+                })}
+              </View>
+            </View>
+          )}
         </View>
 
         <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-5">
@@ -237,7 +323,7 @@ export default function AnalyticsScreen() {
       {/* Category Budgets Modal */}
       <Modal visible={showBudgetsModal} animationType="slide" transparent={true} onRequestClose={() => setShowBudgetsModal(false)}>
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.8)' }}
         >
           <ScrollView bounces={false} keyboardShouldPersistTaps="handled" className="bg-stone-900 rounded-t-3xl border-t border-stone-800" contentContainerStyle={{ padding: 24 }} showsVerticalScrollIndicator={false}>
