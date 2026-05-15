@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useFonts } from 'expo-font';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { View, ActivityIndicator, Text } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import 'react-native-reanimated';
@@ -12,6 +12,7 @@ import 'react-native-reanimated';
 import "../global.css";
 import { NotificationProvider } from '@/components/NotificationProvider';
 import { AuthProvider, useAuth } from '@/components/AuthProvider';
+import { CurrencyProvider } from '@/components/CurrencyProvider';
 
 import { useColorScheme } from '@/components/useColorScheme';
 
@@ -55,31 +56,14 @@ export default function RootLayout() {
 }
 
 function RootLayoutNav() {
-  const colorScheme = useColorScheme();
-  const [appIsReady, setAppIsReady] = useState(false);
-
-  useEffect(() => {
-    // Show splash screen for at least 2 seconds for a premium feel
-    const prepare = async () => {
-      try {
-        await new Promise(resolve => setTimeout(resolve, 2500));
-      } catch (e) {
-        console.warn(e);
-      } finally {
-        setAppIsReady(true);
-        await SplashScreen.hideAsync();
-      }
-    };
-
-    prepare();
-  }, []);
-
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <NotificationProvider>
-          <AuthHandler />
-        </NotificationProvider>
+        <CurrencyProvider>
+          <NotificationProvider>
+            <AuthHandler />
+          </NotificationProvider>
+        </CurrencyProvider>
       </AuthProvider>
     </QueryClientProvider>
   );
@@ -94,12 +78,11 @@ function AuthHandler() {
     if (!isInitialized) return;
 
     const inAuthGroup = segments[0] === '(auth)';
-    
+    const onResetPassword = segments[1] === 'reset-password';
+
     if (!session && !inAuthGroup) {
-      // Redirect to login if not authenticated
       router.replace('/(auth)/login');
-    } else if (session && inAuthGroup) {
-      // Redirect to app if authenticated
+    } else if (session && inAuthGroup && !onResetPassword) {
       router.replace('/(tabs)');
     }
   }, [session, isInitialized, segments]);
@@ -121,7 +104,7 @@ function AuthHandler() {
       <Stack screenOptions={{ contentStyle: { backgroundColor: '#000' } }}>
         <Stack.Screen name="(auth)" options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'App Guide', headerStyle: { backgroundColor: '#000' }, headerTintColor: '#34d399' }} />
+        <Stack.Screen name="modal" options={{ title: 'App Guide', headerStyle: { backgroundColor: '#000' }, headerTintColor: '#34d399', headerShadowVisible: false, contentStyle: { backgroundColor: '#000' } }} />
       </Stack>
     </ThemeProvider>
   );
