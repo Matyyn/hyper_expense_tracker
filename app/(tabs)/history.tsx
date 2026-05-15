@@ -1,25 +1,55 @@
 import React, { useMemo, useState } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, Modal, useWindowDimensions, RefreshControl, TextInput } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, Modal, RefreshControl, TextInput, ActivityIndicator, Switch } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNotification } from '../../components/NotificationProvider';
 import { useAuth } from '../../components/AuthProvider';
 import { useCurrency } from '../../components/CurrencyProvider';
-import { useExpenseSync } from '../../hooks/useExpenseSync';
-import { useQueryClient } from '@tanstack/react-query';
+import { useExpenseSync, INCOME_CATEGORY } from '../../hooks/useExpenseSync';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { supabase } from '../../lib/supabase';
 
 type SortMode = 'newest' | 'oldest' | 'highest' | 'lowest';
 type FilterCat = 'All' | string;
+
+interface EditDraft {
+  id: string;
+  description: string;
+  amount: string;
+  category: string;
+}
+
+const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 export default function HistoryScreen() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
 
-  const { allExpenses: expenses, deleteExpense, categoryMap, categories } = useExpenseSync(user?.id);
-  const { height } = useWindowDimensions();
+  const { deleteExpense, categoryMap, categories } = useExpenseSync(user?.id);
   const { showNotification } = useNotification();
   const { format } = useCurrency();
+
+  // Month navigation state
+  const today = new Date();
+  const [viewYear, setViewYear] = useState(today.getFullYear());
+  const [viewMonth, setViewMonth] = useState(today.getMonth());
+
+  const isCurrentMonth = viewYear === today.getFullYear() && viewMonth === today.getMonth();
+
+  const navigateMonth = (direction: -1 | 1) => {
+    let newMonth = viewMonth + direction;
+    let newYear = viewYear;
+    if (newMonth < 0) { newMonth = 11; newYear -= 1; }
+    if (newMonth > 11) { newMonth = 0; newYear += 1; }
+    // Prevent going past current month
+    if (newYear > today.getFullYear() || (newYear === today.getFullYear() && newMonth > today.getMonth())) return;
+    // Prevent going back more than 12 months
+    const diffMonths = (today.getFullYear() - newYear) * 12 + (today.getMonth() - newMonth);
+    if (diffMonths > 12) return;
+    setViewYear(newYear);
+    setViewMonth(newMonth);
+  };
 
   const [sortMode, setSortMode] = useState<SortMode>('newest');
   const [filterCat, setFilterCat] = useState<FilterCat>('All');
@@ -28,16 +58,40 @@ export default function HistoryScreen() {
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
   const [itemToDelete, setItemToDelete] = useState<string | null>(null);
 
+  // Edit modal state
+  const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // Per-month query (separate from useExpenseSync's current-month query)
+  const { data: historyExpenses = [], isLoading } = useQuery({
+    queryKey: ['expenses-history', user?.id, viewYear, viewMonth],
+    queryFn: async () => {
+      if (!user?.id) return [];
+      const start = new Date(viewYear, viewMonth, 1, 0, 0, 0, 0);
+      const end = new Date(viewYear, viewMonth + 1, 0, 23, 59, 59, 999);
+      const { data, error } = await supabase
+        .from('expenses')
+        .select('*')
+        .eq('user_id', user.id)
+        .gte('created_at', start.toISOString())
+        .lte('created_at', end.toISOString())
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      return data as any[];
+    },
+    enabled: !!user?.id,
+  });
+
   const allCategories = ['All', ...categories.map(c => c.name)];
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return expenses.filter(e => {
+    return historyExpenses.filter(e => {
       if (filterCat !== 'All' && e.category !== filterCat) return false;
       if (q && !(e.description || '').toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [expenses, filterCat, search]);
+  }, [historyExpenses, filterCat, search]);
 
   const sorted = [...filtered].sort((a, b) => {
     switch (sortMode) {
@@ -51,7 +105,9 @@ export default function HistoryScreen() {
 
   const grouped: Record<string, typeof sorted> = {};
   sorted.forEach(exp => {
-    const date = exp.created_at ? new Date(exp.created_at).toLocaleDateString('en-PK', { weekday: 'short', month: 'short', day: 'numeric' }) : 'Unknown';
+    const date = exp.created_at
+      ? new Date(exp.created_at).toLocaleDateString('en-PK', { weekday: 'short', month: 'short', day: 'numeric' })
+      : 'Unknown';
     if (!grouped[date]) grouped[date] = [];
     grouped[date].push(exp);
   });
@@ -68,6 +124,45 @@ export default function HistoryScreen() {
       showNotification('Expense deleted successfully', 'success');
       setDeleteModalVisible(false);
       setItemToDelete(null);
+      queryClient.invalidateQueries({ queryKey: ['expenses-history', user?.id, viewYear, viewMonth] });
+    }
+  };
+
+  const openEdit = (exp: any) => {
+    setEditDraft({
+      id: exp.id,
+      description: exp.description || '',
+      amount: String(exp.amount),
+      category: exp.category || '',
+    });
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editDraft || !user?.id) return;
+    const amount = Number(editDraft.amount);
+    if (isNaN(amount) || amount <= 0) {
+      showNotification('Invalid amount', 'error');
+      return;
+    }
+    setSaving(true);
+    try {
+      const { error } = await supabase
+        .from('expenses')
+        .update({
+          description: editDraft.description.trim(),
+          amount,
+          category: editDraft.category,
+        })
+        .eq('id', editDraft.id);
+      if (error) throw error;
+      queryClient.invalidateQueries({ queryKey: ['expenses-history', user.id, viewYear, viewMonth] });
+      queryClient.invalidateQueries({ queryKey: ['expenses', user.id] });
+      showNotification('Expense updated', 'success');
+      setEditDraft(null);
+    } catch (e: any) {
+      showNotification(e.message || 'Update failed', 'error');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -80,6 +175,7 @@ export default function HistoryScreen() {
 
   const onRefresh = async () => {
     setRefreshing(true);
+    await queryClient.invalidateQueries({ queryKey: ['expenses-history', user?.id, viewYear, viewMonth] });
     await queryClient.invalidateQueries({ queryKey: ['expenses', user?.id] });
     setRefreshing(false);
     showNotification('Synced', 'success');
@@ -89,14 +185,38 @@ export default function HistoryScreen() {
     <SafeAreaView className="flex-1 bg-black">
       <ScrollView
         className="px-6"
-        contentContainerStyle={{ minHeight: height * 0.8, paddingBottom: 24 }}
+        contentContainerStyle={{ paddingBottom: 32 }}
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#34d399" />}
       >
-        <View className="mb-5 mt-1">
+        {/* Title */}
+        <View className="mb-2 mt-1">
           <Text className="text-3xl font-bold text-white tracking-tight">History</Text>
-          <Text className="text-stone-400 mt-1 text-[11px] font-semibold tracking-widest uppercase">{expenses.length} records this month</Text>
         </View>
+
+        {/* Month Navigation */}
+        <View className="flex-row items-center justify-center mb-4">
+          <TouchableOpacity
+            onPress={() => navigateMonth(-1)}
+            className="w-9 h-9 items-center justify-center rounded-full bg-stone-900 border border-stone-800 active:bg-stone-800"
+          >
+            <FontAwesome name="chevron-left" size={12} color="#a8a29e" />
+          </TouchableOpacity>
+          <Text className="text-white text-base font-bold tracking-tight mx-5">
+            {monthNames[viewMonth]} {viewYear}
+          </Text>
+          <TouchableOpacity
+            onPress={() => navigateMonth(1)}
+            disabled={isCurrentMonth}
+            className={`w-9 h-9 items-center justify-center rounded-full border ${isCurrentMonth ? 'bg-stone-900/40 border-stone-800/40' : 'bg-stone-900 border-stone-800 active:bg-stone-800'}`}
+          >
+            <FontAwesome name="chevron-right" size={12} color={isCurrentMonth ? '#44403c' : '#a8a29e'} />
+          </TouchableOpacity>
+        </View>
+
+        <Text className="text-stone-400 mb-4 text-[11px] font-semibold tracking-widest uppercase text-center">
+          {historyExpenses.length} records
+        </Text>
 
         {/* Search */}
         <View className="flex-row items-center bg-stone-900 border border-stone-800 rounded-2xl px-4 py-1 mb-4">
@@ -125,7 +245,9 @@ export default function HistoryScreen() {
                 onPress={() => setSortMode(opt.key)}
                 className={`px-3.5 py-2 mr-2 rounded-full border ${sortMode === opt.key ? 'bg-emerald-600 border-emerald-500' : 'bg-stone-900 border-stone-800'}`}
               >
-                <Text className={`text-xs font-semibold uppercase tracking-wider ${sortMode === opt.key ? 'text-white' : 'text-stone-400'}`}>{opt.label}</Text>
+                <Text className={`text-xs font-semibold uppercase tracking-wider ${sortMode === opt.key ? 'text-white' : 'text-stone-400'}`}>
+                  {opt.label}
+                </Text>
               </TouchableOpacity>
             ))}
           </ScrollView>
@@ -149,7 +271,12 @@ export default function HistoryScreen() {
           </ScrollView>
         </View>
 
-        {sorted.length === 0 ? (
+        {/* List */}
+        {isLoading ? (
+          <View className="items-center py-10">
+            <ActivityIndicator color="#34d399" />
+          </View>
+        ) : sorted.length === 0 ? (
           <View className="bg-stone-900 border border-stone-800 rounded-3xl p-8 items-center mt-6">
             <View className="w-14 h-14 bg-stone-800/50 rounded-2xl items-center justify-center mb-3">
               <FontAwesome name="inbox" size={20} color="#52525b" />
@@ -165,10 +292,11 @@ export default function HistoryScreen() {
                 <Text className="text-stone-600 text-xs font-semibold">{format(items.reduce((s, e) => s + Number(e.amount), 0))}</Text>
               </View>
               {items.map((exp, index) => {
-                const isIncome = exp.category === 'Income';
+                const isIncome = exp.category === INCOME_CATEGORY;
                 return (
                   <TouchableOpacity
                     key={exp.id || index}
+                    onPress={() => openEdit(exp)}
                     onLongPress={() => requestDelete(exp.id)}
                     delayLongPress={500}
                     className={`flex-row justify-between items-center px-4 py-3 rounded-2xl mb-2 border active:bg-stone-800 ${isIncome ? 'bg-emerald-950/40 border-emerald-500/20' : 'bg-stone-900/60 border-stone-800'}`}
@@ -179,7 +307,9 @@ export default function HistoryScreen() {
                       </View>
                       <View className="flex-1">
                         <Text className="text-white text-sm font-semibold" numberOfLines={1}>{exp.description}</Text>
-                        <Text className="text-stone-500 text-[11px] uppercase tracking-wider mt-0.5">{exp.category}{exp.is_weekend ? ' • Wknd' : ''}</Text>
+                        <Text className="text-stone-500 text-[11px] uppercase tracking-wider mt-0.5">
+                          {exp.category}{exp.is_weekend ? ' · Wknd' : ''}
+                        </Text>
                       </View>
                     </View>
                     <Text className={`text-sm font-bold tracking-tight ml-2 ${isIncome ? 'text-emerald-400' : 'text-rose-400'}`}>
@@ -190,6 +320,12 @@ export default function HistoryScreen() {
               })}
             </View>
           ))
+        )}
+
+        {sorted.length > 0 && (
+          <Text className="text-stone-600 text-[10px] text-center mt-2 uppercase tracking-widest">
+            Tap to edit · Long-press to delete
+          </Text>
         )}
       </ScrollView>
 
@@ -202,7 +338,6 @@ export default function HistoryScreen() {
             </View>
             <Text className="text-xl font-bold text-white text-center mb-2 tracking-tight">Delete Expense?</Text>
             <Text className="text-stone-400 text-sm text-center mb-6">This action cannot be undone. The amount will be restored to your budget.</Text>
-
             <View className="flex-row gap-3">
               <TouchableOpacity
                 className="flex-1 py-4 rounded-2xl bg-stone-800 items-center active:bg-stone-700"
@@ -221,6 +356,71 @@ export default function HistoryScreen() {
         </View>
       </Modal>
 
+      {/* Edit Modal */}
+      <Modal visible={!!editDraft} transparent={true} animationType="slide" onRequestClose={() => setEditDraft(null)}>
+        <View className="flex-1 justify-end bg-black/80">
+          <View className="bg-stone-900 rounded-t-3xl border-t border-stone-800 p-6">
+            <View className="w-12 h-1.5 bg-stone-700 self-center rounded-full mb-6" />
+            <Text className="text-xl font-bold text-white tracking-tight mb-1">Edit Expense</Text>
+            <Text className="text-stone-400 text-sm mb-5">Update the details below</Text>
+
+            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Description</Text>
+            <TextInput
+              placeholder="What was this for?"
+              placeholderTextColor="#78716c"
+              value={editDraft?.description || ''}
+              onChangeText={v => setEditDraft(d => d && { ...d, description: v })}
+              className="bg-black text-white text-sm px-4 py-3.5 rounded-2xl border border-stone-800 mb-3"
+            />
+
+            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Amount</Text>
+            <View className="flex-row items-center bg-black rounded-2xl px-4 py-3 border border-stone-800 mb-3">
+              <TextInput
+                placeholder="0"
+                placeholderTextColor="#78716c"
+                keyboardType="numeric"
+                value={editDraft?.amount || ''}
+                onChangeText={v => setEditDraft(d => d && { ...d, amount: v })}
+                className="flex-1 text-white text-lg font-bold"
+              />
+            </View>
+
+            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Category</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-5">
+              {categories.map(cat => (
+                <TouchableOpacity
+                  key={cat.id}
+                  onPress={() => setEditDraft(d => d && { ...d, category: cat.name })}
+                  className={`px-3.5 py-2 mr-2 rounded-full border ${editDraft?.category === cat.name ? 'bg-emerald-600 border-emerald-500' : 'bg-black border-stone-800'}`}
+                >
+                  <Text className={`text-xs font-semibold ${editDraft?.category === cat.name ? 'text-white' : 'text-stone-400'}`}>
+                    {cat.icon} {cat.name}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            <View className="flex-row gap-3">
+              <TouchableOpacity
+                onPress={() => setEditDraft(null)}
+                className="flex-1 py-4 rounded-2xl bg-stone-800 items-center active:bg-stone-700"
+              >
+                <Text className="text-white text-sm font-semibold uppercase tracking-wider">Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleSaveEdit}
+                disabled={saving}
+                className="flex-1 py-4 rounded-2xl bg-emerald-600 items-center active:bg-emerald-500"
+              >
+                {saving
+                  ? <ActivityIndicator color="white" />
+                  : <Text className="text-white text-sm font-bold uppercase tracking-wider">Save</Text>
+                }
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }

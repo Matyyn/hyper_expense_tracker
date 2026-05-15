@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, ScrollView, useWindowDimensions, TextInput, TouchableOpacity, RefreshControl, KeyboardAvoidingView, Platform, Modal, ActivityIndicator } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { View, Text, ScrollView, TextInput, TouchableOpacity, RefreshControl, KeyboardAvoidingView, Platform, Modal, ActivityIndicator, Switch, Keyboard } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNotification } from '../../components/NotificationProvider';
@@ -26,6 +26,7 @@ interface GoalDraft {
 }
 
 const EMPTY_DRAFT: GoalDraft = { name: '', target: '', current: '0', deadline: '' };
+const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 function SectionTitle({ icon, label, color = '#34d399', right }: { icon: React.ComponentProps<typeof FontAwesome>['name']; label: string; color?: string; right?: React.ReactNode }) {
   return (
@@ -34,7 +35,7 @@ function SectionTitle({ icon, label, color = '#34d399', right }: { icon: React.C
         <View className="w-7 h-7 rounded-lg bg-black border border-stone-800 items-center justify-center mr-3">
           <FontAwesome name={icon} size={12} color={color} />
         </View>
-        <Text className="text-white text-base font-bold tracking-tight">{label}</Text>
+        <Text className="text-white text-sm font-bold tracking-tight">{label}</Text>
       </View>
       {right}
     </View>
@@ -49,16 +50,51 @@ export default function SavingsScreen() {
   const { metrics, updateProfile } = useExpenseSync(user?.id);
   const { showNotification } = useNotification();
   const { format, symbol } = useCurrency();
-  const { height } = useWindowDimensions();
   const { savingsThisMonth, savingsGoal, totalSavings } = metrics;
 
-  const [goalInput, setGoalInput] = useState(savingsGoal.toString());
+  const scrollRef = useRef<ScrollView>(null);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
 
+  const [goalInput, setGoalInput] = useState(savingsGoal.toString());
   const initialGoals: SavingsGoal[] = (user?.user_metadata?.savings_goals as SavingsGoal[]) || [];
   const [goalDraft, setGoalDraft] = useState<GoalDraft | null>(null);
   const [savingGoal, setSavingGoal] = useState(false);
+  const [contributeAmounts, setContributeAmounts] = useState<Record<string, string>>({});
+
+  const [dlYear, setDlYear] = useState(new Date().getFullYear());
+  const [dlMonth, setDlMonth] = useState(new Date().getMonth());
+  const [dlDay, setDlDay] = useState(new Date().getDate());
+  const [hasDeadline, setHasDeadline] = useState(false);
+
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', e => {
+      setKeyboardHeight(e.endCoordinates.height);
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 120);
+    });
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardHeight(0));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
 
   useEffect(() => { setGoalInput(savingsGoal.toString()); }, [savingsGoal]);
+
+  useEffect(() => {
+    if (!goalDraft) return;
+    if (goalDraft.deadline) {
+      const d = new Date(goalDraft.deadline);
+      if (!isNaN(d.getTime())) {
+        setDlYear(d.getFullYear());
+        setDlMonth(d.getMonth());
+        setDlDay(d.getDate());
+        setHasDeadline(true);
+        return;
+      }
+    }
+    const now = new Date();
+    setDlYear(now.getFullYear());
+    setDlMonth(now.getMonth());
+    setDlDay(now.getDate());
+    setHasDeadline(false);
+  }, [goalDraft?.id, goalDraft?.deadline]);
 
   const handleSaveMonthlyGoal = () => {
     const amount = Number(goalInput);
@@ -99,11 +135,12 @@ export default function SavingsScreen() {
       showNotification('Name and target required', 'error');
       return;
     }
+    const deadlineValue = hasDeadline ? new Date(dlYear, dlMonth, dlDay).toISOString() : undefined;
     let next: SavingsGoal[];
     if (goalDraft.id) {
-      next = initialGoals.map(g => g.id === goalDraft.id ? { ...g, name, target, current, deadline: goalDraft.deadline || undefined } : g);
+      next = initialGoals.map(g => g.id === goalDraft.id ? { ...g, name, target, current, deadline: deadlineValue } : g);
     } else {
-      next = [...initialGoals, { id: `${Date.now()}`, name, target, current, deadline: goalDraft.deadline || undefined }];
+      next = [...initialGoals, { id: `${Date.now()}`, name, target, current, deadline: deadlineValue }];
     }
     const ok = await persistGoals(next);
     if (ok) {
@@ -132,13 +169,13 @@ export default function SavingsScreen() {
   return (
     <SafeAreaView className="flex-1 bg-black">
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={{ flex: 1 }}
       >
         <ScrollView
+          ref={scrollRef}
           className="px-6"
-          contentContainerStyle={{ minHeight: height * 0.8, paddingBottom: 24 }}
+          contentContainerStyle={{ paddingBottom: keyboardHeight > 0 ? keyboardHeight + 24 : 32 }}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#34d399" />}
@@ -154,7 +191,7 @@ export default function SavingsScreen() {
               <FontAwesome name="bank" size={20} color="#34d399" />
             </View>
             <Text className="text-emerald-500/70 text-[11px] font-semibold uppercase tracking-widest mb-2">Total Accumulated</Text>
-            <Text className="text-4xl font-bold text-emerald-400 tracking-tight">{format(totalSavings)}</Text>
+            <Text className="text-3xl font-bold text-emerald-400 tracking-tight">{format(totalSavings)}</Text>
           </View>
 
           {/* This month */}
@@ -177,9 +214,9 @@ export default function SavingsScreen() {
           <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-5">
             <SectionTitle icon="flag" label="Monthly Goal" />
             <View className="flex-row items-center bg-black rounded-2xl px-4 py-3 border border-stone-800 mb-4">
-              <Text className="text-stone-500 text-lg font-semibold mr-3">{symbol}</Text>
+              <Text className="text-stone-500 text-sm font-semibold mr-3">{symbol}</Text>
               <TextInput
-                className="flex-1 text-emerald-400 text-xl font-bold tracking-tight"
+                className="flex-1 text-emerald-400 text-sm font-bold tracking-tight"
                 keyboardType="numeric"
                 value={goalInput}
                 onChangeText={setGoalInput}
@@ -193,7 +230,7 @@ export default function SavingsScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* Specific Goals (multi) */}
+          {/* Saving Goals */}
           <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-5">
             <SectionTitle
               icon="star"
@@ -225,25 +262,38 @@ export default function SavingsScreen() {
                     className="bg-black/40 border border-stone-800 rounded-2xl p-4 mb-2 active:bg-stone-800/40"
                   >
                     <View className="flex-row justify-between items-center mb-2">
-                      <View className="flex-row items-center flex-1">
+                      <View className="flex-row items-center flex-1 mr-2">
                         <Text className="text-white text-sm font-semibold" numberOfLines={1}>{g.name}</Text>
                         {done && <Text className="text-emerald-400 text-xs ml-2">✓</Text>}
                       </View>
                       <Text className="text-stone-300 text-sm font-bold">{format(g.current)} / {format(g.target)}</Text>
                     </View>
-                    <View className="h-2 bg-black rounded-full overflow-hidden mb-2">
+                    <View className="h-2 bg-black rounded-full overflow-hidden mb-3">
                       <View className={`h-full rounded-full ${done ? 'bg-emerald-400' : 'bg-emerald-500'}`} style={{ width: `${pct}%` }} />
                     </View>
                     <View className="flex-row justify-between items-center">
-                      <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest">
+                      <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest flex-1 mr-3">
                         {Math.round(pct)}%{deadline ? ` · By ${deadline.toLocaleDateString([], { month: 'short', day: 'numeric' })}` : ''}
                       </Text>
-                      <View className="flex-row">
-                        <TouchableOpacity onPress={() => handleContribute(g.id, -100)} className="w-7 h-7 rounded-full bg-stone-800 items-center justify-center mr-2">
-                          <FontAwesome name="minus" size={9} color="#a8a29e" />
+                      <View className="flex-row items-center bg-stone-900 border border-stone-800 rounded-xl px-2 py-1.5">
+                        <TouchableOpacity
+                          onPress={() => handleContribute(g.id, -Number(contributeAmounts[g.id] || 100))}
+                          className="w-6 h-6 rounded-lg bg-stone-800 items-center justify-center"
+                        >
+                          <FontAwesome name="minus" size={8} color="#a8a29e" />
                         </TouchableOpacity>
-                        <TouchableOpacity onPress={() => handleContribute(g.id, 100)} className="w-7 h-7 rounded-full bg-emerald-500/20 items-center justify-center">
-                          <FontAwesome name="plus" size={9} color="#34d399" />
+                        <TextInput
+                          value={contributeAmounts[g.id] ?? '100'}
+                          onChangeText={v => setContributeAmounts(prev => ({ ...prev, [g.id]: v.replace(/[^0-9]/g, '') }))}
+                          keyboardType="numeric"
+                          style={{ width: 44 }}
+                          className="text-white text-xs text-center mx-1.5 py-0"
+                        />
+                        <TouchableOpacity
+                          onPress={() => handleContribute(g.id, Number(contributeAmounts[g.id] || 100))}
+                          className="w-6 h-6 rounded-lg bg-emerald-500/20 items-center justify-center"
+                        >
+                          <FontAwesome name="plus" size={8} color="#34d399" />
                         </TouchableOpacity>
                       </View>
                     </View>
@@ -252,7 +302,7 @@ export default function SavingsScreen() {
               })
             )}
             {initialGoals.length > 0 && (
-              <Text className="text-stone-600 text-[10px] text-center mt-2 uppercase tracking-widest">Tap a goal to edit · +/− adds {symbol}100</Text>
+              <Text className="text-stone-600 text-[10px] text-center mt-2 uppercase tracking-widest">Tap goal to edit · Enter amount then +/−</Text>
             )}
           </View>
         </ScrollView>
@@ -261,12 +311,18 @@ export default function SavingsScreen() {
       {/* Goal Editor Modal */}
       <Modal visible={!!goalDraft} animationType="slide" transparent={true} onRequestClose={() => setGoalDraft(null)}>
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.8)' }}
         >
-          <ScrollView bounces={false} keyboardShouldPersistTaps="handled" className="bg-stone-900 rounded-t-3xl border-t border-stone-800" contentContainerStyle={{ padding: 24 }} showsVerticalScrollIndicator={false}>
+          <ScrollView
+            bounces={false}
+            keyboardShouldPersistTaps="handled"
+            className="bg-stone-900 rounded-t-3xl border-t border-stone-800"
+            contentContainerStyle={{ padding: 24, paddingBottom: 36 }}
+            showsVerticalScrollIndicator={false}
+          >
             <View className="w-12 h-1.5 bg-stone-700 self-center rounded-full mb-6" />
-            <Text className="text-xl font-bold text-white tracking-tight mb-1">{goalDraft?.id ? 'Edit Goal' : 'New Goal'}</Text>
+            <Text className="text-base font-bold text-white tracking-tight mb-1">{goalDraft?.id ? 'Edit Goal' : 'New Goal'}</Text>
             <Text className="text-stone-400 text-sm mb-5">Track progress toward a specific target</Text>
 
             <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Name</Text>
@@ -280,38 +336,74 @@ export default function SavingsScreen() {
 
             <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Target Amount</Text>
             <View className="flex-row items-center bg-black rounded-2xl px-4 py-3 border border-stone-800 mb-3">
-              <Text className="text-stone-500 text-lg font-semibold mr-3">{symbol}</Text>
+              <Text className="text-stone-500 text-sm font-semibold mr-3">{symbol}</Text>
               <TextInput
                 placeholder="0"
                 placeholderTextColor="#78716c"
                 keyboardType="numeric"
                 value={goalDraft?.target || ''}
                 onChangeText={v => setGoalDraft(d => d && { ...d, target: v })}
-                className="flex-1 text-white text-lg font-bold"
+                className="flex-1 text-white text-sm font-bold"
               />
             </View>
 
             <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Current Saved</Text>
             <View className="flex-row items-center bg-black rounded-2xl px-4 py-3 border border-stone-800 mb-3">
-              <Text className="text-stone-500 text-lg font-semibold mr-3">{symbol}</Text>
+              <Text className="text-stone-500 text-sm font-semibold mr-3">{symbol}</Text>
               <TextInput
                 placeholder="0"
                 placeholderTextColor="#78716c"
                 keyboardType="numeric"
                 value={goalDraft?.current || ''}
                 onChangeText={v => setGoalDraft(d => d && { ...d, current: v })}
-                className="flex-1 text-white text-lg font-bold"
+                className="flex-1 text-white text-sm font-bold"
               />
             </View>
 
-            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Deadline (optional, YYYY-MM-DD)</Text>
-            <TextInput
-              placeholder="2026-12-31"
-              placeholderTextColor="#78716c"
-              value={goalDraft?.deadline || ''}
-              onChangeText={v => setGoalDraft(d => d && { ...d, deadline: v })}
-              className="bg-black text-white text-sm px-4 py-3.5 rounded-2xl border border-stone-800 mb-5"
-            />
+            <View className="flex-row items-center justify-between mb-3">
+              <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest ml-1">Set Deadline</Text>
+              <Switch
+                value={hasDeadline}
+                onValueChange={setHasDeadline}
+                trackColor={{ false: '#292524', true: '#059669' }}
+                thumbColor={hasDeadline ? '#34d399' : '#78716c'}
+              />
+            </View>
+
+            {hasDeadline && (
+              <>
+                <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Month</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-3">
+                  {monthNames.map((m, idx) => (
+                    <TouchableOpacity
+                      key={m}
+                      onPress={() => {
+                        setDlMonth(idx);
+                        const maxDay = new Date(dlYear, idx + 1, 0).getDate();
+                        if (dlDay > maxDay) setDlDay(maxDay);
+                      }}
+                      className={`px-3.5 py-2 mr-2 rounded-full border ${dlMonth === idx ? 'bg-emerald-600 border-emerald-500' : 'bg-black border-stone-800'}`}
+                    >
+                      <Text className={`text-xs font-semibold uppercase tracking-wider ${dlMonth === idx ? 'text-white' : 'text-stone-500'}`}>{m}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+                <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Day</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-5">
+                  {Array.from({ length: new Date(dlYear, dlMonth + 1, 0).getDate() }, (_, i) => i + 1).map(d => (
+                    <TouchableOpacity
+                      key={d}
+                      onPress={() => setDlDay(d)}
+                      className={`w-10 h-10 mr-1.5 rounded-full items-center justify-center border ${dlDay === d ? 'bg-emerald-600 border-emerald-500' : 'bg-black border-stone-800'}`}
+                    >
+                      <Text className={`text-xs font-semibold ${dlDay === d ? 'text-white' : 'text-stone-500'}`}>{d}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </>
+            )}
+
+            {!hasDeadline && <View className="mb-5" />}
 
             <View className="flex-row gap-3">
               {goalDraft?.id && (

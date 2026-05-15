@@ -1,6 +1,6 @@
 import FontAwesome from "@expo/vector-icons/FontAwesome";
 import { useQueryClient } from "@tanstack/react-query";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -282,6 +282,8 @@ export default function Dashboard() {
     requestNotificationPermissions();
   }, [user?.id]);
 
+  const expiryNotifSentRef = useRef<string | null>(null);
+
   useEffect(() => {
     const all = [...commuteTemplates, ...foodTemplates, ...otherTemplates];
     if (all.length === 0) return;
@@ -333,6 +335,15 @@ export default function Dashboard() {
   const dailyBurn =
     daysUntilExpiry > 0 ? monthlyLeftover / daysUntilExpiry : monthlyLeftover;
   const daysLeftInMonth = endOfMonth.getDate() - today.getDate();
+
+  useEffect(() => {
+    if (!storedExpiry || isBudgetExpired || monthlyLeftover <= 0) return;
+    if (daysUntilExpiry !== 3 && daysUntilExpiry !== 1) return;
+    const key = `${storedExpiry}-${daysUntilExpiry}`;
+    if (expiryNotifSentRef.current === key) return;
+    expiryNotifSentRef.current = key;
+    sendBudgetExpiryAlert(daysUntilExpiry, format(monthlyLeftover));
+  }, [daysUntilExpiry, storedExpiry, isBudgetExpired]);
 
   const handleTransferToSavings = async () => {
     if (monthlyLeftover <= 0) return;
@@ -736,10 +747,10 @@ export default function Dashboard() {
             <View className="flex-row bg-black/10 rounded-2xl p-3">
               <View className="flex-1 px-2">
                 <Text className="text-emerald-100/70 text-[10px] font-semibold uppercase tracking-wider mb-1">
-                  Daily Burn
+                  Daily Avg
                 </Text>
                 <Text className="text-white text-base font-bold tracking-tight">
-                  {format(dailyBurn)}
+                  {format((() => { const first = expenses.filter(e => e.created_at).map(e => new Date(e.created_at!).setHours(0,0,0,0)).reduce((m, d) => d < m ? d : m, Infinity); const days = first < Infinity ? Math.floor((new Date().setHours(0,0,0,0) - first) / 86400000) + 1 : 0; return days > 0 ? totalSpentMonthly / days : 0; })())}
                 </Text>
               </View>
               <View className="w-px bg-black/20" />

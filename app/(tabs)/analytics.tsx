@@ -84,10 +84,15 @@ export default function AnalyticsScreen() {
     limit: initialBudgets[cat],
   })).sort((a, b) => b.amount - a.amount);
 
-  const spendingDays = new Set(
-    expenses.filter(e => e.created_at).map(e => new Date(e.created_at!).toDateString())
-  ).size;
-  const dailyAvg = spendingDays > 0 ? totalSpentMonthly / spendingDays : 0;
+  const todayMidnight = new Date().setHours(0, 0, 0, 0);
+  const firstSpend = expenses
+    .filter(e => e.created_at)
+    .map(e => new Date(e.created_at!).setHours(0, 0, 0, 0))
+    .reduce((min, d) => d < min ? d : min, Infinity);
+  const daysSinceFirst = firstSpend < Infinity
+    ? Math.floor((todayMidnight - firstSpend) / 86400000) + 1
+    : 0;
+  const dailyAvg = daysSinceFirst > 0 ? totalSpentMonthly / daysSinceFirst : 0;
 
   const today = new Date();
   const currentWeekOfMonth = Math.ceil(today.getDate() / 7);
