@@ -6,7 +6,7 @@ import * as Notifications from 'expo-notifications';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect, useRef } from 'react';
-import { View, ActivityIndicator, Text } from 'react-native';
+import { View, ActivityIndicator, Text, Image } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import 'react-native-reanimated';
 
@@ -110,9 +110,7 @@ function AuthHandler() {
   if (!isInitialized) {
     return (
       <Animated.View exiting={FadeOut} className="flex-1 bg-black items-center justify-center">
-        <View className="w-20 h-20 bg-emerald-500/10 rounded-[28px] items-center justify-center mb-8 border border-emerald-500/20 shadow-2xl shadow-emerald-500/20">
-          <FontAwesome name="google-wallet" size={40} color="#34d399" />
-        </View>
+        <Image source={require('../assets/images/icon.png')} style={{ width: 80, height: 80, borderRadius: 20, marginBottom: 32 }} />
         <ActivityIndicator size="large" color="#34d399" />
         <Text className="text-emerald-400 font-bold mt-6 tracking-widest uppercase text-xs">Loading Hyper Expense</Text>
       </Animated.View>

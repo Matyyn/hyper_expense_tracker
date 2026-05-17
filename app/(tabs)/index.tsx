@@ -1159,7 +1159,9 @@ export default function Dashboard() {
             onPress={() => {}}
             className="bg-stone-900 rounded-t-3xl p-6 border-t border-stone-800"
           >
-            <View className="w-12 h-1.5 bg-stone-700 self-center rounded-full mb-6" />
+            <TouchableOpacity onPress={() => setShowDateModal(false)} activeOpacity={0.6} className="self-center mb-6 py-2 px-8">
+              <View className="w-12 h-1.5 bg-stone-700 rounded-full" />
+            </TouchableOpacity>
             <Text className="text-xl font-bold text-white tracking-tight mb-1">
               Select Date
             </Text>
@@ -1243,22 +1245,18 @@ export default function Dashboard() {
         transparent={true}
         onRequestClose={() => setShowBudgetModal(false)}
       >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          style={{
-            flex: 1,
-            justifyContent: "flex-end",
-            backgroundColor: "rgba(0,0,0,0.8)",
-          }}
-        >
-          <ScrollView
-            bounces={false}
-            keyboardShouldPersistTaps="handled"
-            className="bg-stone-900 rounded-t-3xl border-t border-stone-800"
-            contentContainerStyle={{ padding: 24 }}
-            showsVerticalScrollIndicator={false}
-          >
-            <View className="w-12 h-1.5 bg-stone-700 self-center rounded-full mb-6" />
+        <Pressable onPress={() => setShowBudgetModal(false)} style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.8)' }}>
+          <Pressable onPress={() => {}} className="bg-stone-900 rounded-t-3xl border-t border-stone-800" style={{ maxHeight: '75%' }}>
+            <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
+              <ScrollView
+                bounces={false}
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={{ padding: 24 }}
+                showsVerticalScrollIndicator={false}
+              >
+            <TouchableOpacity onPress={() => setShowBudgetModal(false)} activeOpacity={0.6} className="self-center mb-6 py-2 px-8">
+              <View className="w-12 h-1.5 bg-stone-700 rounded-full" />
+            </TouchableOpacity>
             <Text className="text-xl font-bold text-white tracking-tight mb-1">
               Wallet Settings
             </Text>
@@ -1398,8 +1396,10 @@ export default function Dashboard() {
                 </Text>
               </TouchableOpacity>
             </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
+              </ScrollView>
+            </KeyboardAvoidingView>
+          </Pressable>
+        </Pressable>
       </Modal>
 
       {/* Notifications Modal */}
@@ -1419,7 +1419,9 @@ export default function Dashboard() {
             style={{ maxHeight: "75%" }}
           >
             <View className="p-6 pb-4">
-              <View className="w-12 h-1.5 bg-stone-700 self-center rounded-full mb-5" />
+              <TouchableOpacity onPress={() => setShowNotifModal(false)} activeOpacity={0.6} className="self-center mb-5 py-2 px-8">
+                <View className="w-12 h-1.5 bg-stone-700 rounded-full" />
+              </TouchableOpacity>
               <View className="flex-row items-center justify-between mb-1">
                 <Text className="text-xl font-bold text-white tracking-tight">
                   Notifications
@@ -1509,22 +1511,18 @@ export default function Dashboard() {
         transparent={true}
         onRequestClose={() => setTemplateDraft(null)}
       >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          style={{
-            flex: 1,
-            justifyContent: "flex-end",
-            backgroundColor: "rgba(0,0,0,0.8)",
-          }}
-        >
-          <ScrollView
-            bounces={false}
-            keyboardShouldPersistTaps="handled"
-            className="bg-stone-900 rounded-t-3xl border-t border-stone-800"
-            contentContainerStyle={{ padding: 24 }}
-            showsVerticalScrollIndicator={false}
-          >
-            <View className="w-12 h-1.5 bg-stone-700 self-center rounded-full mb-6" />
+        <Pressable onPress={() => setTemplateDraft(null)} style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.8)' }}>
+          <Pressable onPress={() => {}} className="bg-stone-900 rounded-t-3xl border-t border-stone-800" style={{ maxHeight: '75%' }}>
+            <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
+              <ScrollView
+                bounces={false}
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={{ padding: 24 }}
+                showsVerticalScrollIndicator={false}
+              >
+            <TouchableOpacity onPress={() => setTemplateDraft(null)} activeOpacity={0.6} className="self-center mb-6 py-2 px-8">
+              <View className="w-12 h-1.5 bg-stone-700 rounded-full" />
+            </TouchableOpacity>
             <Text className="text-xl font-bold text-white tracking-tight mb-1">
               {templateDraft?.id ? "Edit Template" : "New Template"}
             </Text>
@@ -1657,8 +1655,10 @@ export default function Dashboard() {
                 </Text>
               </TouchableOpacity>
             </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
+              </ScrollView>
+            </KeyboardAvoidingView>
+          </Pressable>
+        </Pressable>
       </Modal>
     </SafeAreaView>
   );

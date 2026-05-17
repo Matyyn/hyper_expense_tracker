@@ -327,12 +327,13 @@ export default function AnalyticsScreen() {
 
       {/* Category Budgets Modal */}
       <Modal visible={showBudgetsModal} animationType="slide" transparent={true} onRequestClose={() => setShowBudgetsModal(false)}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.8)' }}
-        >
-          <ScrollView bounces={false} keyboardShouldPersistTaps="handled" className="bg-stone-900 rounded-t-3xl border-t border-stone-800" contentContainerStyle={{ padding: 24 }} showsVerticalScrollIndicator={false}>
-            <View className="w-12 h-1.5 bg-stone-700 self-center rounded-full mb-6" />
+        <Pressable onPress={() => setShowBudgetsModal(false)} style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.8)' }}>
+          <Pressable onPress={() => {}} className="bg-stone-900 rounded-t-3xl border-t border-stone-800" style={{ maxHeight: '75%' }}>
+            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+              <ScrollView bounces={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 24 }} showsVerticalScrollIndicator={false}>
+            <TouchableOpacity onPress={() => setShowBudgetsModal(false)} activeOpacity={0.6} className="self-center mb-6 py-2 px-8">
+              <View className="w-12 h-1.5 bg-stone-700 rounded-full" />
+            </TouchableOpacity>
             <Text className="text-xl font-bold text-white tracking-tight mb-1">Category Budgets</Text>
             <Text className="text-stone-400 text-sm mb-5">Set monthly limits per category. We'll alert you at 80% and 100%.</Text>
 
@@ -362,8 +363,10 @@ export default function AnalyticsScreen() {
                 {savingBudgets ? <ActivityIndicator color="white" /> : <Text className="text-white text-sm font-bold uppercase tracking-wider">Save</Text>}
               </TouchableOpacity>
             </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
+              </ScrollView>
+            </KeyboardAvoidingView>
+          </Pressable>
+        </Pressable>
       </Modal>
     </SafeAreaView>
   );

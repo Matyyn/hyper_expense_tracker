@@ -4,6 +4,7 @@ import React, { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Modal,
+  Pressable,
   RefreshControl,
   ScrollView,
   Text,
@@ -481,9 +482,12 @@ export default function HistoryScreen() {
         animationType="slide"
         onRequestClose={() => setEditDraft(null)}
       >
-        <View className="flex-1 justify-end bg-black/80">
+        <Pressable onPress={() => setEditDraft(null)} className="flex-1 justify-end bg-black/80">
+          <Pressable onPress={() => {}}>
           <View className="bg-stone-900 rounded-t-3xl border-t border-stone-800 p-6">
-            <View className="w-12 h-1.5 bg-stone-700 self-center rounded-full mb-6" />
+            <TouchableOpacity onPress={() => setEditDraft(null)} activeOpacity={0.6} className="self-center mb-6 py-2 px-8">
+              <View className="w-12 h-1.5 bg-stone-700 rounded-full" />
+            </TouchableOpacity>
             <Text className="text-xl font-bold text-white tracking-tight mb-1">
               Edit Expense
             </Text>
@@ -569,7 +573,8 @@ export default function HistoryScreen() {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+          </Pressable>
+        </Pressable>
       </Modal>
     </SafeAreaView>
   );

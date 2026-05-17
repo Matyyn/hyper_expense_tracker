@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, TextInput, TouchableOpacity, View, Keyboard, Modal } from 'react-native';
+import { ActivityIndicator, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, TextInput, TouchableOpacity, View, Keyboard, Modal } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -156,9 +156,7 @@ export default function LoginScreen() {
         >
           <Pressable onPress={Keyboard.dismiss}>
             <Animated.View entering={FadeInDown.duration(500)} className="mb-10 items-center">
-              <View className="w-16 h-16 bg-emerald-500/10 rounded-2xl items-center justify-center mb-6 border border-emerald-500/20">
-                <FontAwesome name="google-wallet" size={30} color="#34d399" />
-              </View>
+              <Image source={require('../../assets/images/icon.png')} style={{ width: 64, height: 64, borderRadius: 16, marginBottom: 24 }} />
               <Text className="text-3xl font-bold text-white tracking-tight text-center">
                 {isLogin ? 'Welcome Back' : 'Create Account'}
               </Text>
@@ -246,19 +244,19 @@ export default function LoginScreen() {
         transparent
         onRequestClose={() => { setShowForgotModal(false); resetForgotModal(); }}
       >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.85)' }}
-        >
-          <ScrollView
-            bounces={false}
-            keyboardShouldPersistTaps="handled"
-            className="bg-stone-900 rounded-t-3xl border-t border-stone-800"
-            contentContainerStyle={{ padding: 24, paddingBottom: 40 }}
-            showsVerticalScrollIndicator={false}
-          >
+        <Pressable onPress={() => { setShowForgotModal(false); resetForgotModal(); }} style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.85)' }}>
+          <Pressable onPress={() => {}} className="bg-stone-900 rounded-t-3xl border-t border-stone-800" style={{ maxHeight: '75%' }}>
+            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+              <ScrollView
+                bounces={false}
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={{ padding: 24, paddingBottom: 40 }}
+                showsVerticalScrollIndicator={false}
+              >
             {/* Drag handle */}
-            <View className="w-12 h-1.5 bg-stone-700 self-center rounded-full mb-6" />
+            <TouchableOpacity onPress={() => { setShowForgotModal(false); resetForgotModal(); }} activeOpacity={0.6} className="self-center mb-6 py-2 px-8">
+              <View className="w-12 h-1.5 bg-stone-700 rounded-full" />
+            </TouchableOpacity>
 
             {/* Header */}
             <View className="items-center mb-6">
@@ -373,8 +371,10 @@ export default function LoginScreen() {
                 </View>
               </>
             )}
-          </ScrollView>
-        </KeyboardAvoidingView>
+              </ScrollView>
+            </KeyboardAvoidingView>
+          </Pressable>
+        </Pressable>
       </Modal>
     </SafeAreaView>
   );

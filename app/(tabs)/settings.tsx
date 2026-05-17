@@ -331,7 +331,9 @@ export default function SettingsScreen() {
         <Pressable onPress={() => setShowCurrencyModal(false)} className="flex-1 justify-end bg-black/80">
           <Pressable onPress={() => {}} className="bg-stone-900 rounded-t-3xl border-t border-stone-800" style={{ maxHeight: '75%' }}>
             <View className="p-6 pb-3">
-              <View className="w-12 h-1.5 bg-stone-700 self-center rounded-full mb-5" />
+              <TouchableOpacity onPress={() => setShowCurrencyModal(false)} activeOpacity={0.6} className="self-center mb-5 py-2 px-8">
+                <View className="w-12 h-1.5 bg-stone-700 rounded-full" />
+              </TouchableOpacity>
               <Text className="text-xl font-bold text-white tracking-tight mb-1">Choose Currency</Text>
               <Text className="text-stone-400 text-sm">All amounts will display in this currency</Text>
             </View>

@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, ScrollView, TextInput, TouchableOpacity, RefreshControl, KeyboardAvoidingView, Platform, Modal, ActivityIndicator, Switch, Keyboard } from 'react-native';
+import { View, Text, ScrollView, TextInput, TouchableOpacity, RefreshControl, KeyboardAvoidingView, Platform, Modal, ActivityIndicator, Switch, Keyboard, Pressable } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNotification } from '../../components/NotificationProvider';
-import { useExpenseSync } from '../../hooks/useExpenseSync';
+import { useExpenseSync, INCOME_CATEGORY } from '../../hooks/useExpenseSync';
 import { useAuth } from '../../components/AuthProvider';
 import { useCurrency } from '../../components/CurrencyProvider';
 import { useQueryClient } from '@tanstack/react-query';
@@ -47,10 +47,10 @@ export default function SavingsScreen() {
   const queryClient = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
 
-  const { metrics, updateProfile } = useExpenseSync(user?.id);
+  const { metrics, updateProfile, profile } = useExpenseSync(user?.id);
   const { showNotification } = useNotification();
   const { format, symbol } = useCurrency();
-  const { savingsThisMonth, savingsGoal, totalSavings } = metrics;
+  const { savingsThisMonth, savingsGoal, totalSavings, monthlyBudget } = metrics;
 
   const scrollRef = useRef<ScrollView>(null);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
@@ -60,6 +60,8 @@ export default function SavingsScreen() {
   const [goalDraft, setGoalDraft] = useState<GoalDraft | null>(null);
   const [savingGoal, setSavingGoal] = useState(false);
   const [contributeAmounts, setContributeAmounts] = useState<Record<string, string>>({});
+  const didAutoProcess = useRef(false);
+  const didProcessMonthly = useRef(false);
 
   const [dlYear, setDlYear] = useState(new Date().getFullYear());
   const [dlMonth, setDlMonth] = useState(new Date().getMonth());
@@ -105,6 +107,8 @@ export default function SavingsScreen() {
   };
 
   const onRefresh = async () => {
+    didAutoProcess.current = false;
+    didProcessMonthly.current = false;
     setRefreshing(true);
     await queryClient.invalidateQueries({ queryKey: ['profile', user?.id] });
     await queryClient.invalidateQueries({ queryKey: ['expenses', user?.id] });
@@ -163,6 +167,79 @@ export default function SavingsScreen() {
     const next = initialGoals.map(g => g.id === id ? { ...g, current: Math.max(0, g.current + delta) } : g);
     await persistGoals(next);
   };
+
+  const handleExpiredGoals = async (expired: SavingsGoal[]) => {
+    const amountToAdd = expired.reduce((sum, g) => sum + g.current, 0);
+    const remaining = initialGoals.filter(g => !expired.some(e => e.id === g.id));
+    const { error: profileErr } = await supabase
+      .from('profiles')
+      .update({ total_savings: totalSavings + amountToAdd })
+      .eq('id', user!.id);
+    if (profileErr) return;
+    const { error: metaErr } = await supabase.auth.updateUser({ data: { savings_goals: remaining } });
+    if (!metaErr) {
+      queryClient.invalidateQueries({ queryKey: ['profile', user?.id] });
+      showNotification(
+        amountToAdd > 0
+          ? `${expired.length} goal${expired.length > 1 ? 's' : ''} expired — ${format(amountToAdd)} added to savings`
+          : `${expired.length} expired goal${expired.length > 1 ? 's' : ''} cleared`,
+        'success'
+      );
+    }
+  };
+
+  const processMonthlyLeftover = async () => {
+    const now = new Date();
+    const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const prevMonthKey = `${prevMonth.getFullYear()}-${String(prevMonth.getMonth() + 1).padStart(2, '0')}`;
+    const lastProcessed = user?.user_metadata?.last_savings_month as string | undefined;
+    if (lastProcessed === prevMonthKey) return;
+    const startOfPrev = new Date(prevMonth.getFullYear(), prevMonth.getMonth(), 1);
+    const endOfPrev = new Date(prevMonth.getFullYear(), prevMonth.getMonth() + 1, 0, 23, 59, 59, 999);
+    const { data: lastMonthExpenses } = await supabase
+      .from('expenses')
+      .select('amount, category')
+      .eq('user_id', user!.id)
+      .gte('created_at', startOfPrev.toISOString())
+      .lte('created_at', endOfPrev.toISOString());
+    await supabase.auth.updateUser({ data: { last_savings_month: prevMonthKey } });
+    if (!lastMonthExpenses) return;
+    const spent = lastMonthExpenses
+      .filter(e => e.category !== INCOME_CATEGORY)
+      .reduce((sum, e) => sum + Number(e.amount), 0);
+    const leftover = monthlyBudget - spent;
+    if (leftover <= 0) return;
+    const { error } = await supabase
+      .from('profiles')
+      .update({ total_savings: totalSavings + leftover })
+      .eq('id', user!.id);
+    if (!error) {
+      queryClient.invalidateQueries({ queryKey: ['profile', user?.id] });
+      showNotification(`Last month's leftover ${format(leftover)} moved to savings`, 'success');
+    }
+  };
+
+  useEffect(() => {
+    if (didProcessMonthly.current || !user?.id || !profile) return;
+    didProcessMonthly.current = true;
+    processMonthlyLeftover();
+  }, [user?.id, !!profile]);
+
+  const goalsKey = initialGoals.map(g => `${g.id}:${g.deadline ?? ''}`).join(',');
+  useEffect(() => {
+    if (didAutoProcess.current || !initialGoals.length || !user?.id) return;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const expired = initialGoals.filter(g => {
+      if (!g.deadline) return false;
+      const dl = new Date(g.deadline);
+      dl.setHours(0, 0, 0, 0);
+      return dl < today;
+    });
+    didAutoProcess.current = true;
+    if (!expired.length) return;
+    handleExpiredGoals(expired);
+  }, [goalsKey, user?.id]);
 
   const progressPct = Math.max(0, Math.min(100, (savingsThisMonth / (savingsGoal || 1)) * 100));
 
@@ -310,18 +387,18 @@ export default function SavingsScreen() {
 
       {/* Goal Editor Modal */}
       <Modal visible={!!goalDraft} animationType="slide" transparent={true} onRequestClose={() => setGoalDraft(null)}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.8)' }}
-        >
-          <ScrollView
-            bounces={false}
-            keyboardShouldPersistTaps="handled"
-            className="bg-stone-900 rounded-t-3xl border-t border-stone-800"
-            contentContainerStyle={{ padding: 24, paddingBottom: 36 }}
-            showsVerticalScrollIndicator={false}
-          >
-            <View className="w-12 h-1.5 bg-stone-700 self-center rounded-full mb-6" />
+        <Pressable onPress={() => setGoalDraft(null)} style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.8)' }}>
+          <Pressable onPress={() => {}} className="bg-stone-900 rounded-t-3xl border-t border-stone-800" style={{ maxHeight: '75%' }}>
+            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+              <ScrollView
+                bounces={false}
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={{ padding: 24, paddingBottom: 36 }}
+                showsVerticalScrollIndicator={false}
+              >
+            <TouchableOpacity onPress={() => setGoalDraft(null)} activeOpacity={0.6} className="self-center mb-6 py-2 px-8">
+              <View className="w-12 h-1.5 bg-stone-700 rounded-full" />
+            </TouchableOpacity>
             <Text className="text-base font-bold text-white tracking-tight mb-1">{goalDraft?.id ? 'Edit Goal' : 'New Goal'}</Text>
             <Text className="text-stone-400 text-sm mb-5">Track progress toward a specific target</Text>
 
@@ -418,8 +495,10 @@ export default function SavingsScreen() {
                 {savingGoal ? <ActivityIndicator color="white" /> : <Text className="text-white text-sm font-bold uppercase tracking-wider">{goalDraft?.id ? 'Update' : 'Add'}</Text>}
               </TouchableOpacity>
             </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
+              </ScrollView>
+            </KeyboardAvoidingView>
+          </Pressable>
+        </Pressable>
       </Modal>
     </SafeAreaView>
   );

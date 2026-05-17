@@ -4,7 +4,8 @@
       "Bash(npm install *)",
       "Bash(npx expo *)",
       "Bash(taskkill *)",
-      "PowerShell(Stop-Process *)"
+      "PowerShell(Stop-Process *)",
+      "Bash(eas build:list --platform android --limit 5 --non-interactive)"
     ]
   }
 }
