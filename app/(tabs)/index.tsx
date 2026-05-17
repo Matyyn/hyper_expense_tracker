@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Dimensions,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -213,7 +214,11 @@ export default function Dashboard() {
     deleteTemplate,
     isAdding,
     isLoading,
-  } = useExpenseSync(user?.id);
+  } = useExpenseSync(
+    user?.id,
+    (user?.user_metadata?.monthly_budget as number) || 0,
+    (user?.user_metadata?.savings_goal as number) || 0,
+  );
 
   const { showNotification, history, unreadCount, markAllRead, clearHistory } =
     useNotification();
@@ -233,9 +238,8 @@ export default function Dashboard() {
   const [showBudgetModal, setShowBudgetModal] = useState(false);
   const [showDateModal, setShowDateModal] = useState(false);
   const [showNotifModal, setShowNotifModal] = useState(false);
-  const [templateAmounts, setTemplateAmounts] = useState<
-    Record<string, string>
-  >({});
+  const [templateAmounts, setTemplateAmounts] = useState<Record<string, string>>({});
+  const [templateSources, setTemplateSources] = useState<Record<string, string>>({});
   const [quickLogTab, setQuickLogTab] = useState<"commute" | "food" | "other">(
     "commute",
   );
@@ -252,10 +256,28 @@ export default function Dashboard() {
     null,
   );
 
+  const savedSources: Array<{name: string; budget: number}> =
+    (user?.user_metadata?.custom_sources as any[]) || [{ name: "Cash", budget: 0 }];
+
+  const [obBudget, setObBudget] = useState("");
+  const [obGoal, setObGoal] = useState("");
+  const [obSources, setObSources] = useState<Array<{name: string; budget: string}>>([{ name: "Cash", budget: "" }]);
+  const [obSourceName, setObSourceName] = useState("");
+  const [obSourceBudget, setObSourceBudget] = useState("");
+  const [obSaving, setObSaving] = useState(false);
+  const [obError, setObError] = useState("");
+
+  const [activeSource, setActiveSource] = useState(savedSources[0]?.name || "Cash");
+  const [sourceInput, setSourceInput] = useState("");
+  const [sourceDrafts, setSourceDrafts] = useState<Array<{name: string; budget: string}>>([]);
+  const [newSourceName, setNewSourceName] = useState("");
+  const [newSourceBudget, setNewSourceBudget] = useState("");
+
   const [customExpense, setCustomExpense] = useState({
     description: "",
     amount: "",
     category: categories[0]?.name || "Misc",
+    source: "",
   });
 
   const today = new Date();
@@ -441,7 +463,7 @@ export default function Dashboard() {
       if (original && original.amount !== amount) {
         updateTemplate({ id: templateId, amount });
       }
-      addExpense({ amount, description: title, category });
+      addExpense({ amount, description: title, category, source: templateSources[templateId] || activeSource || undefined });
       showNotification(
         `Logged ${format(amount)} for ${title}`,
         "success",
@@ -461,6 +483,7 @@ export default function Dashboard() {
       amount,
       category,
       date: isToday ? undefined : getSelectedDateISO(),
+      source: activeSource || undefined,
     });
     showNotification(
       logMode === "income"
@@ -474,27 +497,42 @@ export default function Dashboard() {
       description: "",
       amount: "",
       category: categories[0]?.name || "Misc",
+      source: "",
     });
   };
 
   const handleSaveSettings = async () => {
-    updateProfile({
-      monthly_budget: Number(newBudget),
-      savings_goal: Number(newGoal),
-    });
-    const expiry = new Date(
-      today.getFullYear(),
-      expiryMonth,
-      expiryDay,
-      23,
-      59,
-      59,
-    );
-    await supabase.auth.updateUser({
-      data: { budget_expiry: expiry.toISOString() },
-    });
+    const budget = Number(newBudget) || 0;
+    const goal = Number(newGoal) || 0;
+    const expiry = new Date(today.getFullYear(), expiryMonth, expiryDay, 23, 59, 59);
+    const nonCash = sourceDrafts.filter(s => s.name.trim() && s.name !== "Cash");
+    const allocated = nonCash.reduce((sum, s) => sum + (Number(s.budget) || 0), 0);
+    const cleanedSources = [
+      { name: "Cash", budget: Math.max(0, budget - allocated) },
+      ...nonCash.map(s => ({ name: s.name.trim(), budget: Number(s.budget) || 0 })),
+    ];
+
+    // Optimistic: update cache immediately so UI reflects change now
+    queryClient.setQueryData(['profile', user?.id], (old: any) => ({
+      ...old, monthly_budget: budget, savings_goal: goal,
+    }));
     setShowBudgetModal(false);
-    showNotification("Budget settings saved", "success");
+    showNotification("Saving...", "success");
+
+    try {
+      const [profileRes] = await Promise.all([
+        supabase.from('profiles').update({ monthly_budget: budget, savings_goal: goal }).eq('id', user!.id),
+        supabase.auth.updateUser({ data: { budget_expiry: expiry.toISOString(), custom_sources: cleanedSources, monthly_budget: budget, savings_goal: goal } }),
+      ]);
+      if (profileRes.error) throw profileRes.error;
+      await supabase.auth.refreshSession();
+      queryClient.invalidateQueries({ queryKey: ['profile', user?.id] });
+      showNotification("Budget settings saved", "success");
+    } catch (e: any) {
+      // Roll back optimistic update
+      queryClient.invalidateQueries({ queryKey: ['profile', user?.id] });
+      showNotification(e.message || "Could not save settings", "error");
+    }
   };
 
   const openNewTemplate = (group: "commute" | "food" | "other") => {
@@ -575,6 +613,58 @@ export default function Dashboard() {
         ? foodTemplates
         : otherTemplates;
 
+  const showOnboardingGate = user?.user_metadata?.is_new_user === true;
+
+  const perSourceSpend = expenses
+    .filter(e => e.category !== INCOME_CATEGORY)
+    .reduce((acc, exp) => {
+      const src = (exp as any).source as string | undefined;
+      if (src) acc[src] = (acc[src] || 0) + Number(exp.amount);
+      return acc;
+    }, {} as Record<string, number>);
+
+  const handleOnboardingSetup = async () => {
+    const budget = Number(obBudget);
+    if (!obBudget || budget < 1000) { setObError("Monthly budget must be at least " + format(1000)); return; }
+    setObError("");
+    setObSaving(true);
+    try {
+      const { error: profileErr } = await supabase
+        .from('profiles')
+        .update({ monthly_budget: budget, savings_goal: Number(obGoal) || 0 })
+        .eq('id', user!.id);
+      if (profileErr) throw profileErr;
+      const total = budget;
+      const nonCash = obSources.filter(s => s.name !== "Cash" && s.name.trim());
+      const allocated = nonCash.reduce((sum, s) => sum + (Number(s.budget) || 0), 0);
+      const cleanedSources = [
+        { name: "Cash", budget: Math.max(0, total - allocated) },
+        ...nonCash.map(s => ({ name: s.name.trim(), budget: Number(s.budget) || 0 })),
+      ];
+      await supabase.auth.updateUser({ data: { is_new_user: false, onboarding_complete: true, custom_sources: cleanedSources, monthly_budget: budget, savings_goal: Number(obGoal) || 0 } });
+      await supabase.auth.refreshSession();
+    } catch (e: any) {
+      setObError(e.message || "Could not save settings");
+    } finally {
+      setObSaving(false);
+    }
+  };
+
+  const handleOnboardingSubmit = () => {
+    if (!customExpense.description || !customExpense.amount) return;
+    const amount = Number(customExpense.amount);
+    if (isNaN(amount) || amount <= 0) return;
+    addExpense({
+      description: customExpense.description,
+      amount,
+      category: customExpense.category,
+      source: customExpense.source || undefined,
+    });
+    supabase.auth.updateUser({ data: { is_new_user: false, onboarding_complete: true } });
+    showNotification(`Logged ${format(amount)} for ${customExpense.description}`, "success", true);
+    setCustomExpense({ description: "", amount: "", category: categories[0]?.name || "Misc", source: "" });
+  };
+
   const reminderEnabled = user?.user_metadata?.reminder_enabled !== false;
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
@@ -586,6 +676,158 @@ export default function Dashboard() {
 
   return (
     <SafeAreaView className="flex-1 bg-black">
+      <Modal visible={showOnboardingGate} animationType="fade" statusBarTranslucent>
+        <SafeAreaView style={{ flex: 1, backgroundColor: "#000" }}>
+          <ScrollView
+            contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 48, paddingBottom: 48 }}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {/* Header */}
+            <View style={{ marginBottom: 40 }}>
+              <Text style={{ fontSize: 11, fontWeight: "700", color: "#34d399", letterSpacing: 2, textTransform: "uppercase", marginBottom: 12 }}>
+                Step 1 of 1
+              </Text>
+              <Text style={{ fontSize: 38, fontWeight: "800", color: "#fff", letterSpacing: -1, lineHeight: 44, marginBottom: 10 }}>
+                Set up your{"\n"}Wallet.
+              </Text>
+              <Text style={{ fontSize: 13, color: "#78716c", fontWeight: "500", lineHeight: 20 }}>
+                Configure your monthly budget before you start tracking. You can change this anytime.
+              </Text>
+            </View>
+
+            {/* Monthly Budget */}
+            <Text style={{ fontSize: 11, fontWeight: "700", color: "#a8a29e", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 8, marginLeft: 4 }}>
+              Monthly Budget <Text style={{ color: "#ef4444" }}>*</Text>
+            </Text>
+            <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: "#111", borderRadius: 18, paddingHorizontal: 18, paddingVertical: 16, borderWidth: 1, borderColor: obError && !obBudget ? "#ef4444" : "#292524", marginBottom: 6 }}>
+              <Text style={{ color: "#57534e", fontSize: 20, fontWeight: "700", marginRight: 10 }}>{symbol}</Text>
+              <TextInput
+                placeholder="e.g. 30000"
+                placeholderTextColor="#44403c"
+                keyboardType="numeric"
+                value={obBudget}
+                onChangeText={v => { setObBudget(v); setObError(""); }}
+                style={{ flex: 1, color: "#fff", fontSize: 22, fontWeight: "800", letterSpacing: -0.5 }}
+              />
+            </View>
+            <Text style={{ fontSize: 11, color: "#57534e", marginBottom: 20, marginLeft: 4 }}>Minimum {symbol}1,000</Text>
+
+            {/* Savings Goal */}
+            <Text style={{ fontSize: 11, fontWeight: "700", color: "#a8a29e", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 8, marginLeft: 4 }}>
+              Monthly Savings Goal <Text style={{ color: "#57534e" }}>(optional)</Text>
+            </Text>
+            <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: "#111", borderRadius: 18, paddingHorizontal: 18, paddingVertical: 16, borderWidth: 1, borderColor: "#292524", marginBottom: 28 }}>
+              <Text style={{ color: "#57534e", fontSize: 20, fontWeight: "700", marginRight: 10 }}>{symbol}</Text>
+              <TextInput
+                placeholder="e.g. 5000"
+                placeholderTextColor="#44403c"
+                keyboardType="numeric"
+                value={obGoal}
+                onChangeText={setObGoal}
+                style={{ flex: 1, color: "#34d399", fontSize: 22, fontWeight: "800", letterSpacing: -0.5 }}
+              />
+            </View>
+
+            {/* Sources */}
+            <Text style={{ fontSize: 11, fontWeight: "700", color: "#a8a29e", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 8, marginLeft: 4 }}>
+              Payment Sources <Text style={{ color: "#57534e" }}>(optional)</Text>
+            </Text>
+            <Text style={{ fontSize: 12, color: "#57534e", marginBottom: 12, marginLeft: 4 }}>
+              Add sources like JazzCash or HBL. Cash gets the remaining budget.
+            </Text>
+
+            {/* Cash row — auto */}
+            {(() => {
+              const total = Number(obBudget) || 0;
+              const allocated = obSources.filter(s => s.name !== "Cash").reduce((sum, s) => sum + (Number(s.budget) || 0), 0);
+              const cashAmt = Math.max(0, total - allocated);
+              return (
+                <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: "#111", borderRadius: 14, paddingHorizontal: 16, paddingVertical: 12, borderWidth: 1, borderColor: "#292524", marginBottom: 8 }}>
+                  <Text style={{ color: "#fff", fontSize: 14, fontWeight: "600", flex: 1 }}>Cash</Text>
+                  <Text style={{ color: "#34d399", fontSize: 14, fontWeight: "700" }}>{total > 0 ? format(cashAmt) : "—"}</Text>
+                  <Text style={{ color: "#57534e", fontSize: 11, marginLeft: 4 }}>auto</Text>
+                </View>
+              );
+            })()}
+
+            {obSources.filter(s => s.name !== "Cash").map((src, idx) => (
+              <View key={idx} style={{ flexDirection: "row", alignItems: "center", backgroundColor: "#111", borderRadius: 14, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1, borderColor: "#292524", marginBottom: 8, gap: 8 }}>
+                <Text style={{ color: "#fff", fontSize: 13, fontWeight: "600", flex: 1 }} numberOfLines={1}>{src.name}</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: "#000", borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, borderWidth: 1, borderColor: "#292524", width: 110 }}>
+                  <Text style={{ color: "#57534e", fontSize: 12, marginRight: 4 }}>{symbol}</Text>
+                  <TextInput
+                    value={src.budget}
+                    onChangeText={v => setObSources(prev => prev.map((s, i) => s.name === src.name ? { ...s, budget: v } : s))}
+                    keyboardType="numeric"
+                    placeholder="0"
+                    placeholderTextColor="#44403c"
+                    style={{ flex: 1, color: "#fff", fontSize: 12, fontWeight: "600" }}
+                  />
+                </View>
+                <TouchableOpacity onPress={() => setObSources(prev => prev.filter(s => s.name !== src.name))} style={{ width: 28, height: 28, alignItems: "center", justifyContent: "center" }}>
+                  <FontAwesome name="times-circle" size={16} color="#57534e" />
+                </TouchableOpacity>
+              </View>
+            ))}
+
+            <View style={{ flexDirection: "row", gap: 8, marginBottom: 36 }}>
+              <View style={{ flex: 1, backgroundColor: "#111", borderRadius: 14, paddingHorizontal: 14, paddingVertical: 11, borderWidth: 1, borderColor: "#292524" }}>
+                <TextInput
+                  value={obSourceName}
+                  onChangeText={setObSourceName}
+                  placeholder="Source name"
+                  placeholderTextColor="#44403c"
+                  style={{ color: "#fff", fontSize: 13 }}
+                />
+              </View>
+              <View style={{ backgroundColor: "#111", borderRadius: 14, paddingHorizontal: 14, paddingVertical: 11, borderWidth: 1, borderColor: "#292524", width: 100 }}>
+                <TextInput
+                  value={obSourceBudget}
+                  onChangeText={setObSourceBudget}
+                  placeholder="Budget"
+                  placeholderTextColor="#44403c"
+                  keyboardType="numeric"
+                  style={{ color: "#fff", fontSize: 13 }}
+                />
+              </View>
+              <TouchableOpacity
+                onPress={() => {
+                  const name = obSourceName.trim();
+                  if (!name || obSources.some(s => s.name.toLowerCase() === name.toLowerCase())) return;
+                  setObSources(prev => [...prev, { name, budget: obSourceBudget }]);
+                  setObSourceName(""); setObSourceBudget("");
+                }}
+                style={{ backgroundColor: "#1a2e23", borderRadius: 14, paddingHorizontal: 16, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#166534" }}
+              >
+                <FontAwesome name="plus" size={14} color="#34d399" />
+              </TouchableOpacity>
+            </View>
+
+            {obError ? (
+              <View style={{ backgroundColor: "#1a0a0a", borderRadius: 12, padding: 12, marginBottom: 16, borderWidth: 1, borderColor: "#7f1d1d" }}>
+                <Text style={{ color: "#f87171", fontSize: 13, fontWeight: "600" }}>{obError}</Text>
+              </View>
+            ) : null}
+
+            <TouchableOpacity
+              onPress={handleOnboardingSetup}
+              disabled={obSaving}
+              style={{ backgroundColor: obSaving ? "#1a2e23" : "#059669", borderRadius: 18, paddingVertical: 18, alignItems: "center" }}
+              activeOpacity={0.85}
+            >
+              {obSaving ? (
+                <ActivityIndicator color="#34d399" />
+              ) : (
+                <Text style={{ color: "#fff", fontSize: 15, fontWeight: "800", letterSpacing: 0.5, textTransform: "uppercase" }}>
+                  Save & Open App
+                </Text>
+              )}
+            </TouchableOpacity>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 24}
@@ -640,16 +882,6 @@ export default function Dashboard() {
                     </Text>
                   </View>
                 )}
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => {
-                  setNewBudget(monthlyBudget.toString());
-                  setNewGoal(savingsGoal.toString());
-                  setShowBudgetModal(true);
-                }}
-                className="w-11 h-11 bg-stone-900 border border-stone-800 rounded-full items-center justify-center active:bg-stone-800"
-              >
-                <FontAwesome name="sliders" size={16} color="#34d399" />
               </TouchableOpacity>
             </View>
           </View>
@@ -731,6 +963,25 @@ export default function Dashboard() {
                     {monthlyLeftover >= 0 ? "On Track" : "Deficit"}
                   </Text>
                 </View>
+                <TouchableOpacity
+                  onPress={async () => {
+                    const [profileRes, userRes] = await Promise.all([
+                      supabase.from('profiles').select('monthly_budget,savings_goal').eq('id', user!.id).single(),
+                      supabase.auth.getUser(),
+                    ]);
+                    const p = profileRes.data;
+                    const freshUser = userRes.data.user;
+                    setNewBudget(p?.monthly_budget ? String(p.monthly_budget) : monthlyBudget ? String(monthlyBudget) : "");
+                    setNewGoal(p?.savings_goal ? String(p.savings_goal) : savingsGoal ? String(savingsGoal) : "");
+                    const freshSources: Array<{name: string; budget: number}> =
+                      (freshUser?.user_metadata?.custom_sources as any[]) || [{ name: "Cash", budget: 0 }];
+                    setSourceDrafts(freshSources.map(s => ({ name: s.name, budget: s.budget ? String(s.budget) : "" })));
+                    setShowBudgetModal(true);
+                  }}
+                  className="w-8 h-8 rounded-full bg-black/20 items-center justify-center active:bg-black/40"
+                >
+                  <FontAwesome name="pencil" size={12} color="rgba(255,255,255,0.7)" />
+                </TouchableOpacity>
               </View>
             </View>
             <Text className="text-emerald-100/60 text-[10px] font-semibold mb-4">
@@ -772,6 +1023,30 @@ export default function Dashboard() {
                 </Text>
               </View>
             </View>
+
+            {savedSources.length > 0 && Object.keys(perSourceSpend).length > 0 && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 12 }}>
+                {savedSources.map(src => {
+                  const spent = perSourceSpend[src.name] || 0;
+                  const pct = src.budget > 0 ? Math.min(100, (spent / src.budget) * 100) : null;
+                  const over = src.budget > 0 && spent > src.budget;
+                  return (
+                    <View key={src.name} style={{ marginRight: 8, backgroundColor: 'rgba(0,0,0,0.25)', borderRadius: 14, padding: 10, minWidth: 80 }}>
+                      <Text style={{ color: 'rgba(255,255,255,0.55)', fontSize: 9, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 3 }}>{src.name}</Text>
+                      <Text style={{ color: over ? '#fca5a5' : '#fff', fontSize: 14, fontWeight: '800', letterSpacing: -0.3 }}>{format(spent)}</Text>
+                      {src.budget > 0 && (
+                        <>
+                          <View style={{ height: 2, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 99, marginTop: 5, overflow: 'hidden' }}>
+                            <View style={{ height: '100%', width: `${pct ?? 0}%`, backgroundColor: over ? '#f87171' : 'rgba(255,255,255,0.5)', borderRadius: 99 }} />
+                          </View>
+                          <Text style={{ color: 'rgba(255,255,255,0.35)', fontSize: 9, marginTop: 3 }}>of {format(src.budget)}</Text>
+                        </>
+                      )}
+                    </View>
+                  );
+                })}
+              </ScrollView>
+            )}
           </Animated.View>
 
           {/* Chart: Weekly / Monthly toggle */}
@@ -832,8 +1107,8 @@ export default function Dashboard() {
                           style={{ minHeight: 14 }}
                         >
                           {amount > 0
-                            ? Math.round(amount / 1000) >= 1
-                              ? `${(amount / 1000).toFixed(0)}k`
+                            ? amount >= 100
+                              ? `${(amount / 1000).toFixed(1)}k`
                               : Math.round(amount)
                             : ""}
                         </Text>
@@ -938,16 +1213,14 @@ export default function Dashboard() {
           )}
 
           {/* Add Entry */}
-          <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-5">
+          <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-3">
             <View className="flex-row items-center justify-between mb-4">
               <View className="flex-row bg-black rounded-full p-1 border border-stone-800">
                 <TouchableOpacity
                   onPress={() => setLogMode("expense")}
                   className={`px-3.5 py-1.5 rounded-full ${logMode === "expense" ? "bg-rose-500/90" : ""}`}
                 >
-                  <Text
-                    className={`text-[11px] font-semibold uppercase tracking-wider ${logMode === "expense" ? "text-white" : "text-stone-500"}`}
-                  >
+                  <Text className={`text-[11px] font-semibold uppercase tracking-wider ${logMode === "expense" ? "text-white" : "text-stone-500"}`}>
                     − Expense
                   </Text>
                 </TouchableOpacity>
@@ -955,9 +1228,7 @@ export default function Dashboard() {
                   onPress={() => setLogMode("income")}
                   className={`px-3.5 py-1.5 rounded-full ${logMode === "income" ? "bg-emerald-600" : ""}`}
                 >
-                  <Text
-                    className={`text-[11px] font-semibold uppercase tracking-wider ${logMode === "income" ? "text-white" : "text-stone-500"}`}
-                  >
+                  <Text className={`text-[11px] font-semibold uppercase tracking-wider ${logMode === "income" ? "text-white" : "text-stone-500"}`}>
                     + Income
                   </Text>
                 </TouchableOpacity>
@@ -966,76 +1237,57 @@ export default function Dashboard() {
                 onPress={() => setShowDateModal(true)}
                 className={`flex-row items-center px-3 py-1.5 rounded-full border ${isToday ? "bg-stone-800/50 border-stone-700" : "bg-amber-500/10 border-amber-500/30"}`}
               >
-                <FontAwesome
-                  name="calendar"
-                  size={10}
-                  color={isToday ? "#a8a29e" : "#fbbf24"}
-                />
-                <Text
-                  className={`text-[11px] font-semibold ml-2 ${isToday ? "text-stone-400" : "text-amber-400"}`}
-                >
-                  {isToday
-                    ? "Today"
-                    : `${monthNames[selectedMonth]} ${selectedDay}`}
+                <FontAwesome name="calendar" size={10} color={isToday ? "#a8a29e" : "#fbbf24"} />
+                <Text className={`text-[11px] font-semibold ml-2 ${isToday ? "text-stone-400" : "text-amber-400"}`}>
+                  {isToday ? "Today" : `${monthNames[selectedMonth]} ${selectedDay}`}
                 </Text>
               </TouchableOpacity>
             </View>
-
             <TextInput
-              placeholder={
-                logMode === "income"
-                  ? "Source of income"
-                  : "What did you spend on?"
-              }
+              placeholder={logMode === "income" ? "Source of income" : "What did you spend on?"}
               placeholderTextColor="#78716c"
               value={customExpense.description}
-              onChangeText={(text) =>
-                setCustomExpense((prev) => ({ ...prev, description: text }))
-              }
+              onChangeText={text => setCustomExpense(prev => ({ ...prev, description: text }))}
               className="bg-black text-white text-sm px-4 py-3.5 rounded-2xl mb-3 border border-stone-800"
             />
-
             {logMode === "expense" && (
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                className="mb-3"
-              >
-                {categories
-                  .filter((c) => c.name !== INCOME_CATEGORY)
-                  .map((cat) => (
-                    <TouchableOpacity
-                      key={cat.id}
-                      onPress={() =>
-                        setCustomExpense((prev) => ({
-                          ...prev,
-                          category: cat.name,
-                        }))
-                      }
-                      className={`px-3.5 py-2 mr-2 rounded-full border ${customExpense.category === cat.name ? "bg-emerald-600 border-emerald-500" : "bg-black border-stone-800"}`}
-                    >
-                      <Text
-                        className={`text-xs font-semibold ${customExpense.category === cat.name ? "text-white" : "text-stone-400"}`}
-                      >
-                        {cat.icon} {cat.name}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-3">
+                {categories.filter(c => c.name !== INCOME_CATEGORY).map(cat => (
+                  <TouchableOpacity
+                    key={cat.id}
+                    onPress={() => setCustomExpense(prev => ({ ...prev, category: cat.name }))}
+                    className={`px-3.5 py-2 mr-2 rounded-full border ${customExpense.category === cat.name ? "bg-emerald-600 border-emerald-500" : "bg-black border-stone-800"}`}
+                  >
+                    <Text className={`text-xs font-semibold ${customExpense.category === cat.name ? "text-white" : "text-stone-400"}`}>
+                      {cat.icon} {cat.name}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
               </ScrollView>
             )}
-
+            {savedSources.length > 1 && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-3">
+                {savedSources.map(src => (
+                  <TouchableOpacity
+                    key={src.name}
+                    onPress={() => setActiveSource(src.name)}
+                    className={`px-3 py-1.5 mr-2 rounded-full border ${activeSource === src.name ? "bg-stone-700 border-stone-500" : "bg-black border-stone-800"}`}
+                  >
+                    <Text className={`text-xs font-semibold ${activeSource === src.name ? "text-stone-100" : "text-stone-500"}`}>
+                      {src.name}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
             <View className="flex-row items-center bg-black rounded-2xl px-4 py-3 border border-stone-800 mb-3">
-              <Text className="text-stone-500 text-base font-semibold mr-2">
-                {symbol}
-              </Text>
+              <Text className="text-stone-500 text-base font-semibold mr-2">{symbol}</Text>
               <TextInput
                 placeholder="0"
                 placeholderTextColor="#78716c"
                 keyboardType="numeric"
                 value={customExpense.amount}
-                onChangeText={(text) =>
-                  setCustomExpense((prev) => ({ ...prev, amount: text }))
-                }
+                onChangeText={text => setCustomExpense(prev => ({ ...prev, amount: text }))}
                 className="flex-1 text-white font-bold text-lg"
               />
             </View>
@@ -1096,22 +1348,37 @@ export default function Dashboard() {
                     >
                       {t.title}
                     </Text>
-                    <View className="flex-row items-center bg-stone-900 rounded-lg px-2 py-1 mb-2.5 border border-stone-800 w-full">
-                      <Text className="text-stone-500 text-[10px] mr-1">
-                        {symbol}
-                      </Text>
+                    <View className="flex-row items-center bg-stone-900 rounded-lg px-2 py-1 mb-2 border border-stone-800 w-full">
+                      <Text className="text-stone-500 text-[10px] mr-1">{symbol}</Text>
                       <TextInput
                         value={templateAmounts[t.id] ?? t.amount.toString()}
-                        onChangeText={(val) =>
-                          setTemplateAmounts((prev) => ({
-                            ...prev,
-                            [t.id]: val,
-                          }))
-                        }
+                        onChangeText={(val) => setTemplateAmounts(prev => ({ ...prev, [t.id]: val }))}
                         keyboardType="numeric"
                         className="text-white font-semibold text-xs flex-1 py-0.5 text-center"
                       />
                     </View>
+                    {savedSources.length > 1 && (
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ width: '100%', marginBottom: 8 }}>
+                        {savedSources.map(src => {
+                          const selected = (templateSources[t.id] ?? savedSources[0]?.name) === src.name;
+                          return (
+                            <TouchableOpacity
+                              key={src.name}
+                              onPress={e => { e.stopPropagation?.(); setTemplateSources(prev => ({ ...prev, [t.id]: src.name })); }}
+                              style={{
+                                paddingHorizontal: 8, paddingVertical: 3, marginRight: 4, borderRadius: 99,
+                                backgroundColor: selected ? '#059669' : '#000',
+                                borderWidth: 1, borderColor: selected ? '#10b981' : '#292524',
+                              }}
+                            >
+                              <Text style={{ fontSize: 9, fontWeight: '700', color: selected ? '#fff' : '#57534e' }}>
+                                {src.name}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </ScrollView>
+                    )}
                     <View className="bg-emerald-600 w-full py-2 rounded-xl items-center">
                       <Text className="text-white text-[11px] font-bold uppercase tracking-wider">
                         Log
@@ -1139,6 +1406,31 @@ export default function Dashboard() {
               <Text className="text-stone-600 text-[10px] text-center mt-2 uppercase tracking-widest">
                 Long-press a tile to edit
               </Text>
+            )}
+            {activeTemplates.length === 0 && categories.filter(c => c.name !== INCOME_CATEGORY).length > 0 && (
+              <View className="mt-3">
+                <Text className="text-stone-600 text-[10px] font-semibold uppercase tracking-widest mb-3 text-center">
+                  Quick add by category
+                </Text>
+                <View className="flex-row flex-wrap" style={{ gap: 8 }}>
+                  {categories.filter(c => c.name !== INCOME_CATEGORY).map(cat => (
+                    <TouchableOpacity
+                      key={cat.id}
+                      onPress={() => {
+                        setCustomExpense(prev => ({ ...prev, category: cat.name }));
+                        setLogMode("expense");
+                      }}
+                      className="flex-row items-center bg-black border border-stone-800 rounded-2xl px-3 py-2 active:bg-stone-800"
+                    >
+                      <Text className="text-base mr-2">{cat.icon}</Text>
+                      <Text className="text-stone-300 text-xs font-semibold">{cat.name}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <Text className="text-stone-700 text-[10px] text-center mt-3 uppercase tracking-widest">
+                  Tap to pre-select · Add templates above for faster logging
+                </Text>
+              </View>
             )}
           </View>
         </ScrollView>
@@ -1242,27 +1534,26 @@ export default function Dashboard() {
       <Modal
         visible={showBudgetModal}
         animationType="slide"
-        transparent={true}
+        transparent={false}
         onRequestClose={() => setShowBudgetModal(false)}
       >
-        <Pressable onPress={() => setShowBudgetModal(false)} style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.8)' }}>
-          <Pressable onPress={() => {}} className="bg-stone-900 rounded-t-3xl border-t border-stone-800" style={{ maxHeight: '75%' }}>
-            <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <View style={{ flex: 1, backgroundColor: '#000' }}>
+          <View style={{ flex: 1, backgroundColor: '#111' }}>
               <ScrollView
-                bounces={false}
                 keyboardShouldPersistTaps="handled"
-                contentContainerStyle={{ padding: 24 }}
+                contentContainerStyle={{ padding: 24, paddingBottom: 48 }}
                 showsVerticalScrollIndicator={false}
               >
-            <TouchableOpacity onPress={() => setShowBudgetModal(false)} activeOpacity={0.6} className="self-center mb-6 py-2 px-8">
-              <View className="w-12 h-1.5 bg-stone-700 rounded-full" />
-            </TouchableOpacity>
-            <Text className="text-xl font-bold text-white tracking-tight mb-1">
-              Wallet Settings
-            </Text>
-            <Text className="text-stone-400 text-sm mb-5">
-              Configure your monthly budget & goals
-            </Text>
+            <View className="flex-row items-center justify-between mb-6 mt-2">
+              <Text className="text-2xl font-bold text-white tracking-tight">Wallet Settings</Text>
+              <TouchableOpacity
+                onPress={() => setShowBudgetModal(false)}
+                className="w-10 h-10 rounded-full bg-stone-800 items-center justify-center active:bg-stone-700"
+              >
+                <FontAwesome name="times" size={16} color="#a8a29e" />
+              </TouchableOpacity>
+            </View>
+            <Text className="text-stone-500 text-sm mb-5">Configure your monthly budget, goals & sources</Text>
             <Text className="text-emerald-400 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
               Monthly Budget
             </Text>
@@ -1291,6 +1582,98 @@ export default function Dashboard() {
                 onChangeText={setNewGoal}
               />
             </View>
+            {(() => {
+              const total = Number(newBudget) || 0;
+              const nonCash = sourceDrafts.filter(s => s.name !== "Cash");
+              const allocated = nonCash.reduce((sum, s) => sum + (Number(s.budget) || 0), 0);
+              const cashRemainder = Math.max(0, total - allocated);
+              return (
+                <>
+                  <Text className="text-emerald-400 text-[11px] font-semibold uppercase tracking-widest mb-1 ml-1">
+                    Sources
+                  </Text>
+                  <Text className="text-stone-500 text-xs mb-3 ml-1">
+                    Divide your budget across payment sources. Cash holds the remainder.
+                  </Text>
+
+                  {/* Cash — auto remainder */}
+                  <View className="flex-row items-center bg-black rounded-2xl px-4 py-3 border border-stone-800 mb-2">
+                    <Text className="text-white text-sm font-semibold flex-1">Cash</Text>
+                    <Text className="text-emerald-400 text-sm font-bold">{format(cashRemainder)}</Text>
+                    <Text className="text-stone-600 text-xs ml-1">remaining</Text>
+                  </View>
+
+                  {/* Non-cash sources */}
+                  {nonCash.map((src, _idx) => {
+                    const globalIdx = sourceDrafts.findIndex(s => s.name === src.name);
+                    const amt = Number(src.budget) || 0;
+                    return (
+                      <View key={src.name} className="flex-row items-center bg-black rounded-2xl px-3 py-2.5 border border-stone-800 mb-2 gap-2">
+                        <Text className="text-white text-sm font-semibold flex-1" numberOfLines={1}>{src.name}</Text>
+                        <View className="flex-row items-center bg-stone-900 rounded-xl px-2 py-1.5 border border-stone-800 w-24">
+                          <Text className="text-stone-500 text-xs mr-1">{symbol}</Text>
+                          <TextInput
+                            value={src.budget}
+                            onChangeText={v => setSourceDrafts(prev => prev.map((s, i) => i === globalIdx ? { ...s, budget: v } : s))}
+                            keyboardType="numeric"
+                            placeholder="0"
+                            placeholderTextColor="#57534e"
+                            className="flex-1 text-white text-xs font-semibold"
+                          />
+                        </View>
+                        {total > 0 && (
+                          <Text className="text-stone-500 text-[10px] w-20">
+                            {`/ ${format(total)}`}
+                          </Text>
+                        )}
+                        <TouchableOpacity
+                          onPress={() => setSourceDrafts(prev => prev.filter((_, i) => i !== globalIdx))}
+                          className="w-7 h-7 items-center justify-center"
+                        >
+                          <FontAwesome name="times-circle" size={16} color="#78716c" />
+                        </TouchableOpacity>
+                      </View>
+                    );
+                  })}
+
+                  {/* Add new source */}
+                  <View className="flex-row gap-2 mb-5">
+                    <View className="flex-1 bg-black rounded-2xl px-3 py-2.5 border border-stone-800">
+                      <TextInput
+                        value={newSourceName}
+                        onChangeText={setNewSourceName}
+                        placeholder="New source (e.g. JazzCash)"
+                        placeholderTextColor="#57534e"
+                        className="text-white text-sm"
+                      />
+                    </View>
+                    <View className="bg-black rounded-2xl px-3 py-2.5 border border-stone-800 w-24">
+                      <TextInput
+                        value={newSourceBudget}
+                        onChangeText={setNewSourceBudget}
+                        placeholder="Amount"
+                        placeholderTextColor="#57534e"
+                        keyboardType="numeric"
+                        className="text-white text-sm"
+                      />
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => {
+                        const name = newSourceName.trim();
+                        if (!name || sourceDrafts.some(s => s.name.toLowerCase() === name.toLowerCase())) return;
+                        setSourceDrafts(prev => [...prev, { name, budget: newSourceBudget }]);
+                        setNewSourceName("");
+                        setNewSourceBudget("");
+                      }}
+                      className="bg-emerald-600 rounded-2xl px-4 items-center justify-center active:bg-emerald-500"
+                    >
+                      <FontAwesome name="plus" size={14} color="white" />
+                    </TouchableOpacity>
+                  </View>
+                </>
+              );
+            })()}
+
             <Text className="text-emerald-400 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
               Budget Expiry Date
             </Text>
@@ -1397,12 +1780,12 @@ export default function Dashboard() {
               </TouchableOpacity>
             </View>
               </ScrollView>
-            </KeyboardAvoidingView>
-          </Pressable>
-        </Pressable>
+          </View>
+        </View>
       </Modal>
 
       {/* Notifications Modal */}
+
       <Modal
         visible={showNotifModal}
         animationType="slide"
@@ -1512,12 +1895,11 @@ export default function Dashboard() {
         onRequestClose={() => setTemplateDraft(null)}
       >
         <Pressable onPress={() => setTemplateDraft(null)} style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.8)' }}>
-          <Pressable onPress={() => {}} className="bg-stone-900 rounded-t-3xl border-t border-stone-800" style={{ maxHeight: '75%' }}>
-            <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
+          <Pressable onPress={() => {}} className="bg-stone-900 rounded-t-3xl border-t border-stone-800" style={{ maxHeight: '80%' }}>
               <ScrollView
                 bounces={false}
                 keyboardShouldPersistTaps="handled"
-                contentContainerStyle={{ padding: 24 }}
+                contentContainerStyle={{ padding: 24, paddingBottom: 40 }}
                 showsVerticalScrollIndicator={false}
               >
             <TouchableOpacity onPress={() => setTemplateDraft(null)} activeOpacity={0.6} className="self-center mb-6 py-2 px-8">
@@ -1656,7 +2038,6 @@ export default function Dashboard() {
               </TouchableOpacity>
             </View>
               </ScrollView>
-            </KeyboardAvoidingView>
           </Pressable>
         </Pressable>
       </Modal>

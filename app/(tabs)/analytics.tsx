@@ -29,7 +29,11 @@ export default function AnalyticsScreen() {
   const { format, symbol } = useCurrency();
   const { showNotification } = useNotification();
   const [refreshing, setRefreshing] = useState(false);
-  const { expenses, weeklyExpenses, isLoading, metrics, categoryMap, categories, categorySpend } = useExpenseSync(user?.id);
+  const { expenses, weeklyExpenses, isLoading, metrics, categoryMap, categories, categorySpend } = useExpenseSync(
+    user?.id,
+    (user?.user_metadata?.monthly_budget as number) || 0,
+    (user?.user_metadata?.savings_goal as number) || 0,
+  );
   const { totalSpentMonthly, monthlyBudget } = metrics;
 
   const initialBudgets: Record<string, number> = (user?.user_metadata?.category_budgets as Record<string, number>) || {};
@@ -83,6 +87,21 @@ export default function AnalyticsScreen() {
     percentage: (categoryTotals[cat] / total) * 100,
     limit: initialBudgets[cat],
   })).sort((a, b) => b.amount - a.amount);
+
+  const sourceTotals = expenses.reduce((acc, exp) => {
+    const amount = Number(exp.amount) || 0;
+    const src = (exp as any).source;
+    if (amount > 0 && exp.category !== INCOME_CATEGORY && src) {
+      acc[src] = (acc[src] || 0) + amount;
+    }
+    return acc;
+  }, {} as Record<string, number>);
+  const sourceGrandTotal = Object.values(sourceTotals).reduce((a, b) => a + b, 0) || 1;
+  const sourceList = Object.entries(sourceTotals)
+    .map(([name, amount]) => ({ name, amount, percentage: (amount / sourceGrandTotal) * 100 }))
+    .sort((a, b) => b.amount - a.amount);
+
+  const SOURCE_COLORS = ['#818cf8', '#34d399', '#fbbf24', '#f43f5e', '#a78bfa', '#38bdf8'];
 
   const todayMidnight = new Date().setHours(0, 0, 0, 0);
   const firstSpend = expenses
@@ -207,7 +226,7 @@ export default function AnalyticsScreen() {
                       <View className="h-full rounded-full" style={{ width: `${pctOfLimit ?? cat.percentage}%`, backgroundColor: overLimit ? '#f43f5e' : cat.color }} />
                     </View>
                     {cat.limit ? (
-                      <Text className="text-stone-500 text-[10px] font-semibold w-20 text-right">{Math.round(pctOfLimit!)}% of {Math.round(cat.limit / 1000) >= 1 ? `${(cat.limit / 1000).toFixed(0)}k` : cat.limit}</Text>
+                      <Text className="text-stone-500 text-[10px] font-semibold w-20 text-right">{Math.round(pctOfLimit!)}% of {cat.limit >= 100 ? `${(cat.limit / 1000).toFixed(1)}k` : cat.limit}</Text>
                     ) : (
                       <Text className="text-stone-500 text-xs font-semibold w-10 text-right">{Math.round(cat.percentage)}%</Text>
                     )}
@@ -217,6 +236,29 @@ export default function AnalyticsScreen() {
             })
           )}
         </View>
+
+        {sourceList.length > 0 && (
+          <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-5">
+            <SectionTitle icon="credit-card" label="By Source" color="#818cf8" />
+            {sourceList.map((src, idx) => (
+              <View key={src.name} className={idx === sourceList.length - 1 ? '' : 'mb-4'}>
+                <View className="flex-row justify-between items-center mb-2">
+                  <Text className="text-stone-300 text-sm font-semibold">{src.name}</Text>
+                  <Text className="text-stone-200 text-sm font-bold">{format(src.amount)}</Text>
+                </View>
+                <View className="flex-row items-center">
+                  <View className="flex-1 h-1.5 bg-black rounded-full overflow-hidden mr-3">
+                    <View
+                      className="h-full rounded-full"
+                      style={{ width: `${src.percentage}%`, backgroundColor: SOURCE_COLORS[idx % SOURCE_COLORS.length] }}
+                    />
+                  </View>
+                  <Text className="text-stone-500 text-xs font-semibold w-10 text-right">{Math.round(src.percentage)}%</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
 
         <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-5">
           <View className="flex-row items-center justify-between mb-4">
@@ -252,7 +294,7 @@ export default function AnalyticsScreen() {
                   return (
                     <View key={idx} className="items-center flex-1" style={{ height: '100%' }}>
                       <Text className="text-stone-500 text-[10px] font-semibold mb-1.5" style={{ minHeight: 14 }} numberOfLines={1}>
-                        {amount > 0 ? (Math.round(amount / 1000) >= 1 ? `${(amount / 1000).toFixed(0)}k` : Math.round(amount)) : ''}
+                        {amount > 0 ? (amount >= 100 ? `${(amount / 1000).toFixed(1)}k` : Math.round(amount)) : ''}
                       </Text>
                       <View className="flex-1 w-7 bg-stone-800/60 rounded-t-xl overflow-hidden justify-end">
                         <View className={`w-full rounded-t-xl ${isCurrent ? 'bg-rose-500' : 'bg-emerald-600/70'}`} style={{ height: `${barH}%` }} />
@@ -278,7 +320,7 @@ export default function AnalyticsScreen() {
                   return (
                     <View key={idx} className="items-center flex-1 mx-1" style={{ height: '100%' }}>
                       <Text className="text-stone-500 text-[10px] font-semibold mb-1.5" style={{ minHeight: 14 }} numberOfLines={1}>
-                        {!isFuture && amount > 0 ? (Math.round(amount / 1000) >= 1 ? `${(amount / 1000).toFixed(0)}k` : Math.round(amount)) : ''}
+                        {!isFuture && amount > 0 ? (amount >= 100 ? `${(amount / 1000).toFixed(1)}k` : Math.round(amount)) : ''}
                       </Text>
                       <View className={`flex-1 w-full rounded-t-2xl overflow-hidden justify-end ${isFuture ? 'bg-stone-800/20 border border-stone-800' : 'bg-stone-800/50'}`}>
                         {isFuture ? (

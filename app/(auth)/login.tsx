@@ -50,14 +50,14 @@ export default function LoginScreen() {
         const { error, data } = await supabase.auth.signUp({
           email,
           password,
-          options: { data: { username } },
+          options: { data: { username, is_new_user: true } },
         });
         if (error) throw error;
 
         if (data.user) {
           const userId = data.user.id;
           await supabase.from('profiles').insert([
-            { id: userId, monthly_budget: 50000, savings_goal: 10000, total_savings: 0 },
+            { id: userId, monthly_budget: 0, savings_goal: 0, total_savings: 0 },
           ]);
 
           await supabase.from('categories').insert([

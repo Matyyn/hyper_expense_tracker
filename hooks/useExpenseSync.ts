@@ -12,6 +12,7 @@ export interface Expense {
   category: string;
   is_weekend: boolean;
   created_at?: string;
+  source?: string;
 }
 
 export interface NewExpensePayload {
@@ -19,6 +20,7 @@ export interface NewExpensePayload {
   description: string;
   category: string;
   date?: string;
+  source?: string;
 }
 
 export interface Profile {
@@ -80,19 +82,22 @@ function computeStreak(expenses: Expense[]): number {
   return streak;
 }
 
-export function useExpenseSync(userId: string | undefined) {
+export function useExpenseSync(userId: string | undefined, budgetFallback = 0, goalFallback = 0) {
   const queryClient = useQueryClient();
 
-  const { data: profile } = useQuery<Profile>({
+  const { data: profile } = useQuery<Profile | null>({
     queryKey: ['profile', userId],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', userId || '')
-        .single();
-      if (error) throw error;
-      return data;
+        .maybeSingle();
+      if (error) {
+        console.error('[profile query error]', error.message, 'userId:', userId);
+        throw error;
+      }
+      return data ?? null;
     },
     enabled: !!userId,
   });
@@ -125,8 +130,8 @@ export function useExpenseSync(userId: string | undefined) {
     enabled: !!userId,
   });
 
-  const monthlyBudget = profile?.monthly_budget || 20000;
-  const savingsGoal = profile?.savings_goal || 5000;
+  const monthlyBudget = profile?.monthly_budget || budgetFallback;
+  const savingsGoal = profile?.savings_goal || goalFallback;
   const weeklyBudget = monthlyBudget / 4;
 
   const { data: allExpenses = [], isLoading } = useQuery({
@@ -182,6 +187,7 @@ export function useExpenseSync(userId: string | undefined) {
         category: payload.category,
         user_id: userId,
         is_weekend: isWeekend(expenseDate),
+        source: payload.source || null,
       };
       if (payload.date) {
         insertData.created_at = new Date(payload.date).toISOString();
@@ -195,7 +201,7 @@ export function useExpenseSync(userId: string | undefined) {
       const prev = queryClient.getQueryData(['expenses', userId]);
       const expenseDate = payload.date ? new Date(payload.date) : new Date();
       queryClient.setQueryData(['expenses', userId], (old: any) => [
-        { id: `optimistic-${Date.now()}`, amount: payload.amount, description: payload.description, category: payload.category, is_weekend: isWeekend(expenseDate), created_at: expenseDate.toISOString() },
+        { id: `optimistic-${Date.now()}`, amount: payload.amount, description: payload.description, category: payload.category, is_weekend: isWeekend(expenseDate), created_at: expenseDate.toISOString(), source: payload.source },
         ...(old || []),
       ]);
       return { prev };

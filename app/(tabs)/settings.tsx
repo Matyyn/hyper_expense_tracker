@@ -152,11 +152,8 @@ export default function SettingsScreen() {
     if (!user?.id) return;
     setIsDeleting(true);
     try {
-      await supabase.from('expenses').delete().eq('user_id', user.id);
-      await supabase.from('quick_templates').delete().eq('user_id', user.id);
-      await supabase.from('categories').delete().eq('user_id', user.id);
-      await supabase.from('profiles').delete().eq('id', user.id);
-      showNotification('Account data deleted', 'success');
+      const { error } = await supabase.rpc('delete_user');
+      if (error) throw error;
       setShowDeleteModal(false);
       await supabase.auth.signOut();
     } catch (e: any) {

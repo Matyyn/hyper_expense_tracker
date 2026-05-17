@@ -30,7 +30,15 @@ export const unstable_settings = {
 // Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 1000 * 60 * 3,
+      gcTime: 1000 * 60 * 10,
+      retry: 2,
+    },
+  },
+});
 
 export default function RootLayout() {
   const [loaded, error] = useFonts({
@@ -101,6 +109,7 @@ function AuthHandler() {
     const onResetPassword = segments[1] === 'reset-password';
 
     if (!session && !inAuthGroup) {
+      queryClient.clear();
       router.replace('/(auth)/login');
     } else if (session && inAuthGroup && !onResetPassword) {
       router.replace('/(tabs)');
