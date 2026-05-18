@@ -84,6 +84,8 @@ function AuthHandler() {
   const router = useRouter();
   const notifListener = useRef<Notifications.EventSubscription>();
   const responseListener = useRef<Notifications.EventSubscription>();
+  // Tracks last routed session state to prevent duplicate navigations (e.g. React StrictMode)
+  const lastRoutedSession = useRef<boolean | null>(null);
 
   useEffect(() => {
     notifListener.current = Notifications.addNotificationReceivedListener(() => {
@@ -102,11 +104,19 @@ function AuthHandler() {
     };
   }, []);
 
+  const inAuthGroup = segments[0] === '(auth)';
+  const onResetPassword = segments[1] === 'reset-password';
+  // Hide Stack until we're in the correct route group to prevent flash of wrong screen
+  const inCorrectRouteGroup = isInitialized && (
+    session ? (!inAuthGroup || onResetPassword) : inAuthGroup
+  );
+
   useEffect(() => {
     if (!isInitialized) return;
 
-    const inAuthGroup = segments[0] === '(auth)';
-    const onResetPassword = segments[1] === 'reset-password';
+    const sessionExists = session !== null;
+    if (lastRoutedSession.current === sessionExists) return;
+    lastRoutedSession.current = sessionExists;
 
     if (!session && !inAuthGroup) {
       queryClient.clear();
@@ -114,25 +124,24 @@ function AuthHandler() {
     } else if (session && inAuthGroup && !onResetPassword) {
       router.replace('/(tabs)');
     }
-  }, [session, isInitialized, segments]);
-
-  if (!isInitialized) {
-    return (
-      <Animated.View exiting={FadeOut} className="flex-1 bg-black items-center justify-center">
-        <Image source={require('../assets/images/icon.png')} style={{ width: 80, height: 80, borderRadius: 20, marginBottom: 32 }} />
-        <ActivityIndicator size="large" color="#34d399" />
-        <Text className="text-emerald-400 font-bold mt-6 tracking-widest uppercase text-xs">Loading Hyper Expense</Text>
-      </Animated.View>
-    );
-  }
+  }, [session, isInitialized]); // segments intentionally excluded — routing reacts to auth state only
 
   return (
-    <ThemeProvider value={DarkTheme}>
-      <Stack screenOptions={{ contentStyle: { backgroundColor: '#000' } }}>
-        <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="modal" options={{ title: 'App Guide', headerStyle: { backgroundColor: '#000' }, headerTintColor: '#34d399', headerShadowVisible: false, contentStyle: { backgroundColor: '#000' } }} />
-      </Stack>
-    </ThemeProvider>
+    <>
+      <ThemeProvider value={DarkTheme}>
+        <Stack screenOptions={{ contentStyle: { backgroundColor: '#000' } }}>
+          <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen name="modal" options={{ title: 'App Guide', headerStyle: { backgroundColor: '#000' }, headerTintColor: '#34d399', headerShadowVisible: false, contentStyle: { backgroundColor: '#000' } }} />
+        </Stack>
+      </ThemeProvider>
+      {!inCorrectRouteGroup && (
+        <Animated.View exiting={FadeOut} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} className="bg-black items-center justify-center">
+          <Image source={require('../assets/images/icon.png')} style={{ width: 80, height: 80, borderRadius: 20, marginBottom: 32 }} />
+          <ActivityIndicator size="large" color="#34d399" />
+          <Text className="text-emerald-400 font-bold mt-6 tracking-widest uppercase text-xs">Loading Hyper Expense</Text>
+        </Animated.View>
+      )}
+    </>
   );
 }

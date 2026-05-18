@@ -1,6 +1,10 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
+import * as SecureStore from 'expo-secure-store';
 import { supabase } from '../lib/supabase';
+
+const LOGIN_TIMESTAMP_KEY = 'auth_login_timestamp';
+const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 type AuthContextType = {
   session: Session | null;
@@ -17,13 +21,29 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [isInitialized, setIsInitialized] = useState(false);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setIsInitialized(true);
-    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'INITIAL_SESSION') {
+        if (session) {
+          const ts = await SecureStore.getItemAsync(LOGIN_TIMESTAMP_KEY);
+          if (ts && Date.now() - parseInt(ts, 10) > SESSION_MAX_AGE_MS) {
+            supabase.auth.signOut(); // SIGNED_OUT fires next and sets isInitialized
+            return;
+          }
+        }
+        setSession(session);
+        setIsInitialized(true);
+        return;
+      }
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      // Update session immediately for all other events
       setSession(session);
+
+      if (event === 'SIGNED_IN') {
+        SecureStore.setItemAsync(LOGIN_TIMESTAMP_KEY, String(Date.now())).catch(() => {});
+      } else if (event === 'SIGNED_OUT') {
+        SecureStore.deleteItemAsync(LOGIN_TIMESTAMP_KEY).catch(() => {});
+        setIsInitialized(true); // covers case where signOut was triggered during INITIAL_SESSION
+      }
     });
 
     return () => subscription.unsubscribe();
