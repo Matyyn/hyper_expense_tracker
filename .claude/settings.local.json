@@ -7,7 +7,9 @@
       "PowerShell(Stop-Process *)",
       "Bash(eas build:list --platform android --limit 5 --non-interactive)",
       "Bash(npx tsc *)",
-      "Bash(dir C:\\\\Users\\\\PMLS\\\\Documents\\\\Side Projects\\\\expense_tracker\\\\lib\\\\ *)"
+      "Bash(dir C:\\\\Users\\\\PMLS\\\\Documents\\\\Side Projects\\\\expense_tracker\\\\lib\\\\ *)",
+      "Bash(npx --yes supabase --version)",
+      "Bash(npx --yes supabase migration list)"
     ]
   }
 }

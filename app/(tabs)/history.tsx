@@ -15,10 +15,12 @@ import {
   View
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
 import { useAuth } from "../../components/AuthProvider";
 import { useCurrency } from "../../components/CurrencyProvider";
 import { useNotification } from "../../components/NotificationProvider";
 import { INCOME_CATEGORY, useExpenseSync } from "../../hooks/useExpenseSync";
+import { useLoans } from "../../hooks/useLoans";
 import { supabase } from "../../lib/supabase";
 
 type SortMode = "newest" | "oldest" | "highest" | "lowest";
@@ -31,20 +33,6 @@ interface EditDraft {
   description: string;
   amount: string;
   category: string;
-  source: string;
-}
-
-interface LoanEditDraft {
-  id: string;
-  type: 'lent' | 'borrowed';
-  person: string;
-  amount: string;
-  paid: string;
-  description: string;
-  hasDueDate: boolean;
-  dlYear: number;
-  dlMonth: number;
-  dlDay: number;
   source: string;
 }
 
@@ -68,13 +56,15 @@ export default function HistoryScreen() {
   const queryClient = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
 
-  const { deleteExpense, categoryMap, categories, addExpense } = useExpenseSync(
+  const { deleteExpense, categoryMap, categories } = useExpenseSync(
     user?.id,
     (user?.user_metadata?.monthly_budget as number) || 0,
     (user?.user_metadata?.savings_goal as number) || 0,
   );
+  const { loans } = useLoans(user?.id);
   const { showNotification } = useNotification();
-  const { format, symbol } = useCurrency();
+  const { format } = useCurrency();
+  const router = useRouter();
 
   // Month navigation state
   const today = new Date();
@@ -123,9 +113,6 @@ export default function HistoryScreen() {
   // Edit modal state
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
   const [saving, setSaving] = useState(false);
-  const [loanEditDraft, setLoanEditDraft] = useState<LoanEditDraft | null>(null);
-  const [savingLoanEdit, setSavingLoanEdit] = useState(false);
-  const [partialAmounts, setPartialAmounts] = useState<Record<string, string>>({});
 
   // Per-month query (separate from useExpenseSync's current-month query)
   const { data: historyExpenses = [], isLoading } = useQuery({
@@ -155,17 +142,22 @@ export default function HistoryScreen() {
   const configuredSources = ((user?.user_metadata?.custom_sources as Array<{name: string}>) || []).map((s: {name: string}) => s.name);
   const allSources = Array.from(new Set([...DEFAULT_SOURCES, ...configuredSources, ...dataSources, ...extraSources]));
 
-  // Merge loans into history as synthetic entries
-  const allLoans: any[] = ((user?.user_metadata?.loans as any[]) || []);
-  const loanHistoryItems: any[] = allLoans.map(loan => ({
+  // Hide legacy "Lending" category rows (side-effects of the old loan flow).
+  // Loans now live in their own tables and are merged in as synthetic entries below.
+  const visibleExpenses = useMemo(
+    () => historyExpenses.filter((e: any) => e.category !== 'Lending'),
+    [historyExpenses]
+  );
+
+  const loanHistoryItems: any[] = loans.map(loan => ({
     id: `loan-${loan.id}`,
     _isLoan: true,
     _loanType: loan.type,
     description: `${loan.type === 'lent' ? 'Lent to' : 'Borrowed from'} ${loan.person}`,
-    amount: loan.amount,
+    amount: loan.principal,
     category: loan.type === 'lent' ? 'Lent' : 'Borrowed',
-    created_at: loan.date,
-    source: null,
+    created_at: loan.created_at,
+    source: loan.source,
     is_weekend: false,
     _loan: loan,
   }));
@@ -177,8 +169,8 @@ export default function HistoryScreen() {
       const d = new Date(l.created_at);
       return d >= start && d <= end;
     });
-    return [...historyExpenses, ...loansThisMonth];
-  }, [historyExpenses, loanHistoryItems, viewYear, viewMonth]);
+    return [...visibleExpenses, ...loansThisMonth];
+  }, [visibleExpenses, loanHistoryItems, viewYear, viewMonth]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -284,117 +276,8 @@ export default function HistoryScreen() {
     }
   };
 
-  const handlePartialPaymentFromHistory = async (loanId: string) => {
-    const delta = Number(partialAmounts[loanId] || 0);
-    if (!delta) return;
-    const loan = allLoans.find((l: any) => l.id === loanId);
-    if (!loan) return;
-    const newPaid = Math.min(loan.amount, (loan.paid || 0) + delta);
-    const settled = newPaid >= loan.amount;
-    const actualDelta = newPaid - (loan.paid || 0);
-    const updatedLoans = allLoans.map((l: any) =>
-      l.id === loanId ? { ...l, paid: newPaid, status: settled ? 'settled' : 'active' } : l
-    );
-    try {
-      const { error } = await supabase.auth.updateUser({ data: { loans: updatedLoans } });
-      if (error) throw error;
-      if (actualDelta > 0) {
-        if (loan.type === 'lent') {
-          addExpense({ amount: actualDelta, description: settled ? `${loan.person} fully repaid` : `${loan.person} partial repayment`, category: INCOME_CATEGORY, source: loan.source });
-        } else {
-          addExpense({ amount: actualDelta, description: settled ? `Fully repaid ${loan.person}` : `Partial repayment to ${loan.person}`, category: 'Lending', source: loan.source });
-        }
-      }
-      setPartialAmounts(prev => ({ ...prev, [loanId]: '' }));
-      showNotification(settled ? (loan.type === 'lent' ? `${loan.person} fully paid back` : `Settled with ${loan.person}`) : `${format(actualDelta)} paid`, settled ? 'success' : 'info');
-    } catch (e: any) {
-      showNotification(e.message || 'Failed', 'error');
-    }
-  };
-
-  const handleSettleLoanFromHistory = async (loanId: string) => {
-    const loan = allLoans.find((l: any) => l.id === loanId);
-    if (!loan) return;
-    const updatedLoans = allLoans.map((l: any) =>
-      l.id === loanId ? { ...l, paid: l.amount, status: 'settled' } : l
-    );
-    try {
-      const { error } = await supabase.auth.updateUser({ data: { loans: updatedLoans } });
-      if (error) throw error;
-      const unpaid = loan.amount - (loan.paid || 0);
-      if (unpaid > 0) {
-        if (loan.type === 'lent') {
-          addExpense({ amount: unpaid, description: `${loan.person} fully repaid`, category: INCOME_CATEGORY, source: loan.source });
-        } else {
-          addExpense({ amount: unpaid, description: `Fully repaid ${loan.person}`, category: 'Lending', source: loan.source });
-        }
-      }
-      showNotification(loan.type === 'lent' ? `${loan.person} fully paid back` : `Settled with ${loan.person}`, 'success');
-    } catch (e: any) {
-      showNotification(e.message || 'Failed', 'error');
-    }
-  };
-
-  const openLoanEdit = (loan: any) => {
-    setLoanEditDraft({
-      id: loan.id,
-      type: loan.type,
-      person: loan.person,
-      amount: String(loan.amount),
-      paid: String(loan.paid || 0),
-      description: loan.description || '',
-      hasDueDate: !!loan.due_date,
-      dlYear: loan.due_date ? new Date(loan.due_date).getFullYear() : new Date().getFullYear(),
-      dlMonth: loan.due_date ? new Date(loan.due_date).getMonth() : new Date().getMonth(),
-      dlDay: loan.due_date ? new Date(loan.due_date).getDate() : new Date().getDate(),
-      source: loan.source || '',
-    });
-  };
-
-  const handleSaveLoanEdit = async () => {
-    if (!loanEditDraft || !user?.id) return;
-    const person = loanEditDraft.person.trim();
-    const amount = Number(loanEditDraft.amount);
-    const paid = Number(loanEditDraft.paid) || 0;
-    if (!person || isNaN(amount) || amount <= 0) {
-      showNotification('Person name and amount required', 'error');
-      return;
-    }
-    const due_date = loanEditDraft.hasDueDate
-      ? new Date(loanEditDraft.dlYear, loanEditDraft.dlMonth, loanEditDraft.dlDay).toISOString()
-      : undefined;
-    const updatedLoans = allLoans.map((l: any) =>
-      l.id === loanEditDraft.id
-        ? { ...l, person, amount, paid, description: loanEditDraft.description || undefined, due_date, type: loanEditDraft.type, source: loanEditDraft.source || undefined }
-        : l
-    );
-    setSavingLoanEdit(true);
-    try {
-      const { error } = await supabase.auth.updateUser({ data: { loans: updatedLoans } });
-      if (error) throw error;
-      showNotification('Loan updated', 'success');
-      setLoanEditDraft(null);
-    } catch (e: any) {
-      showNotification(e.message || 'Update failed', 'error');
-    } finally {
-      setSavingLoanEdit(false);
-    }
-  };
-
-  const handleDeleteLoanFromHistory = async () => {
-    if (!loanEditDraft?.id || !user?.id) return;
-    const updatedLoans = allLoans.filter((l: any) => l.id !== loanEditDraft.id);
-    setSavingLoanEdit(true);
-    try {
-      const { error } = await supabase.auth.updateUser({ data: { loans: updatedLoans } });
-      if (error) throw error;
-      showNotification('Loan removed', 'info');
-      setLoanEditDraft(null);
-    } catch (e: any) {
-      showNotification(e.message || 'Delete failed', 'error');
-    } finally {
-      setSavingLoanEdit(false);
-    }
+  const openLoansSection = () => {
+    router.push({ pathname: '/savings', params: { openLoans: '1' } });
   };
 
   const sortOptions: { key: SortMode; label: string }[] = [
@@ -602,88 +485,30 @@ export default function HistoryScreen() {
                 if (exp._isLoan) {
                   const isLent = exp._loanType === 'lent';
                   const loan = exp._loan;
-                  const remaining = loan.amount - (loan.paid || 0);
-                  const pct = Math.min(100, ((loan.paid || 0) / Math.max(loan.amount, 1)) * 100);
                   const dueDate = loan.due_date ? new Date(loan.due_date) : null;
-                  const todayDate = new Date(); todayDate.setHours(0,0,0,0);
-                  const overdue = dueDate ? dueDate < todayDate : false;
-                  const settled = loan.status === 'settled';
+                  const settled = loan.is_settled;
                   return (
-                    <View
+                    <TouchableOpacity
                       key={exp.id}
+                      onPress={openLoansSection}
                       style={{ opacity: settled ? 0.65 : 1 }}
-                      className={`rounded-2xl mb-3 border p-4 ${isLent ? "bg-emerald-950/30 border-emerald-800/30" : "bg-rose-950/20 border-rose-900/20"}`}
+                      className={`flex-row items-center justify-between px-4 py-3 rounded-2xl mb-2 border ${isLent ? "bg-emerald-950/30 border-emerald-800/30" : "bg-rose-950/20 border-rose-900/20"}`}
                     >
-                      <View className="flex-row items-start justify-between mb-2">
-                        <View className="flex-row items-center flex-1 mr-2">
-                          <View className={`w-9 h-9 rounded-xl items-center justify-center mr-3 ${isLent ? "bg-emerald-500/10 border border-emerald-500/20" : "bg-rose-500/10 border border-rose-500/20"}`}>
-                            <FontAwesome name="handshake-o" size={13} color={isLent ? "#34d399" : "#f43f5e"} />
-                          </View>
-                          <View className="flex-1">
-                            <View className="flex-row items-center flex-wrap mb-0.5" style={{ gap: 5 }}>
-                              <Text className="text-white text-sm font-bold">{loan.person}</Text>
-                              {overdue && !settled && (
-                                <View className="bg-rose-500/20 border border-rose-500/30 rounded-full px-1.5 py-0.5">
-                                  <Text className="text-rose-400 text-[9px] font-bold uppercase">Overdue</Text>
-                                </View>
-                              )}
-                              {settled && (
-                                <View className="bg-stone-800 border border-stone-700 rounded-full px-1.5 py-0.5">
-                                  <Text className="text-stone-400 text-[9px] font-semibold uppercase">Settled</Text>
-                                </View>
-                              )}
-                            </View>
-                            <Text className={`text-[10px] uppercase tracking-wide ${isLent ? "text-emerald-700" : "text-rose-800"}`}>
-                              {isLent ? "Lent to" : "Borrowed from"}{dueDate ? ` · Due ${dueDate.toLocaleDateString([], { month: 'short', day: 'numeric' })}` : ''}
-                            </Text>
-                          </View>
+                      <View className="flex-row items-center flex-1">
+                        <View className={`w-10 h-10 rounded-xl items-center justify-center mr-3 ${isLent ? "bg-emerald-500/10 border border-emerald-500/20" : "bg-rose-500/10 border border-rose-500/20"}`}>
+                          <FontAwesome name="handshake-o" size={13} color={isLent ? "#34d399" : "#f43f5e"} />
                         </View>
-                        <View className="items-end">
-                          <Text className={`text-sm font-bold ${isLent ? "text-emerald-400" : "text-rose-400"}`}>{format(remaining)}</Text>
-                          <Text className="text-stone-600 text-[10px]">of {format(loan.amount)}</Text>
+                        <View className="flex-1">
+                          <Text className="text-white text-sm font-semibold" numberOfLines={1}>
+                            {isLent ? `Lent ${format(loan.principal)} to ${loan.person}` : `Borrowed ${format(loan.principal)} from ${loan.person}`}
+                          </Text>
+                          <Text className="text-stone-500 text-[11px] uppercase tracking-wider mt-0.5">
+                            {dueDate ? `Due ${dueDate.toLocaleDateString([], { month: 'short', day: 'numeric' })}` : 'No due date'}{loan.source ? ` · ${loan.source}` : ''}
+                          </Text>
                         </View>
                       </View>
-                      <View className="h-1.5 bg-stone-800/80 rounded-full overflow-hidden mb-3">
-                        <View className={`h-full rounded-full ${isLent ? "bg-emerald-500" : "bg-rose-500"}`} style={{ width: `${pct}%` }} />
-                      </View>
-                      {!settled ? (
-                        <View className="flex-row items-center gap-2">
-                          <View className="flex-1 flex-row items-center bg-black/40 border border-stone-800 rounded-xl px-3 py-2">
-                            <Text className="text-stone-500 text-xs mr-1">{symbol}</Text>
-                            <TextInput
-                              value={partialAmounts[loan.id] ?? ''}
-                              onChangeText={v => setPartialAmounts(prev => ({ ...prev, [loan.id]: v.replace(/[^0-9]/g, '') }))}
-                              keyboardType="numeric"
-                              placeholder="Amount paid"
-                              placeholderTextColor="#57534e"
-                              className="flex-1 text-white text-xs"
-                            />
-                          </View>
-                          <TouchableOpacity
-                            onPress={() => handlePartialPaymentFromHistory(loan.id)}
-                            className="px-3 py-2 bg-stone-800 border border-stone-700 rounded-xl active:bg-stone-700"
-                          >
-                            <Text className="text-stone-300 text-[11px] font-semibold">Pay</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            onPress={() => handleSettleLoanFromHistory(loan.id)}
-                            className={`px-3 py-2 border rounded-xl active:opacity-70 ${isLent ? 'bg-emerald-900/30 border-emerald-700' : 'bg-rose-900/30 border-rose-700'}`}
-                          >
-                            <Text className={`text-[11px] font-semibold ${isLent ? 'text-emerald-400' : 'text-rose-400'}`}>Settle</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            onPress={() => openLoanEdit(loan)}
-                            className="w-8 h-8 items-center justify-center bg-black/30 border border-stone-800 rounded-xl"
-                          >
-                            <FontAwesome name="pencil" size={11} color="#78716c" />
-                          </TouchableOpacity>
-                        </View>
-                      ) : (
-                        <TouchableOpacity onPress={() => openLoanEdit(loan)} className="flex-row items-center justify-end">
-                          <FontAwesome name="pencil" size={11} color="#57534e" />
-                        </TouchableOpacity>
-                      )}
-                    </View>
+                      <FontAwesome name="chevron-right" size={10} color="#57534e" />
+                    </TouchableOpacity>
                   );
                 }
                 const isIncome = exp.category === INCOME_CATEGORY;
@@ -900,151 +725,6 @@ export default function HistoryScreen() {
           </ScrollView>
           </Pressable>
         </Pressable>
-      </Modal>
-      {/* Loan Edit Modal */}
-      <Modal visible={!!loanEditDraft} transparent={false} animationType="slide" onRequestClose={() => setLoanEditDraft(null)}>
-        <SafeAreaView style={{ flex: 1, backgroundColor: '#000' }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#292524' }}>
-            <Text style={{ color: '#fff', fontSize: 22, fontWeight: '700', letterSpacing: -0.5 }}>Edit Loan</Text>
-            <TouchableOpacity
-              onPress={() => setLoanEditDraft(null)}
-              style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#1c1917', borderWidth: 1, borderColor: '#292524', alignItems: 'center', justifyContent: 'center' }}
-            >
-              <FontAwesome name="times" size={14} color="#a8a29e" />
-            </TouchableOpacity>
-          </View>
-          <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 24, paddingBottom: 48 }}>
-            <Text className="text-stone-400 text-sm mb-5">Update loan details</Text>
-
-              <View className="flex-row bg-black rounded-full p-1 border border-stone-800 mb-4">
-                <TouchableOpacity
-                  onPress={() => setLoanEditDraft(d => d && { ...d, type: 'lent' })}
-                  className={`flex-1 py-2.5 rounded-full items-center ${loanEditDraft?.type === 'lent' ? 'bg-emerald-600' : ''}`}
-                >
-                  <Text className={`text-xs font-bold uppercase tracking-wider ${loanEditDraft?.type === 'lent' ? 'text-white' : 'text-stone-500'}`}>I Lent Money</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => setLoanEditDraft(d => d && { ...d, type: 'borrowed' })}
-                  className={`flex-1 py-2.5 rounded-full items-center ${loanEditDraft?.type === 'borrowed' ? 'bg-rose-600' : ''}`}
-                >
-                  <Text className={`text-xs font-bold uppercase tracking-wider ${loanEditDraft?.type === 'borrowed' ? 'text-white' : 'text-stone-500'}`}>I Borrowed</Text>
-                </TouchableOpacity>
-              </View>
-
-              <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
-                {loanEditDraft?.type === 'lent' ? 'Lent To' : 'Borrowed From'}
-              </Text>
-              <TextInput
-                placeholder="Person's name"
-                placeholderTextColor="#78716c"
-                value={loanEditDraft?.person || ''}
-                onChangeText={v => setLoanEditDraft(d => d && { ...d, person: v })}
-                className="bg-black text-white text-sm px-4 py-3.5 rounded-2xl border border-stone-800 mb-3"
-              />
-
-              <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Amount</Text>
-              <View className="flex-row items-center bg-black rounded-2xl px-4 py-3 border border-stone-800 mb-3">
-                <Text className="text-stone-500 text-sm font-semibold mr-3">{symbol}</Text>
-                <TextInput
-                  placeholder="0"
-                  placeholderTextColor="#78716c"
-                  keyboardType="numeric"
-                  value={loanEditDraft?.amount || ''}
-                  onChangeText={v => setLoanEditDraft(d => d && { ...d, amount: v })}
-                  className="flex-1 text-white text-sm font-bold"
-                />
-              </View>
-
-              <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Amount Paid Back</Text>
-              <View className="flex-row items-center bg-black rounded-2xl px-4 py-3 border border-stone-800 mb-3">
-                <Text className="text-stone-500 text-sm font-semibold mr-3">{symbol}</Text>
-                <TextInput
-                  placeholder="0"
-                  placeholderTextColor="#78716c"
-                  keyboardType="numeric"
-                  value={loanEditDraft?.paid || ''}
-                  onChangeText={v => setLoanEditDraft(d => d && { ...d, paid: v })}
-                  className="flex-1 text-white text-sm font-bold"
-                />
-              </View>
-
-              <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Description (optional)</Text>
-              <TextInput
-                placeholder="e.g. Rent share, groceries..."
-                placeholderTextColor="#78716c"
-                value={loanEditDraft?.description || ''}
-                onChangeText={v => setLoanEditDraft(d => d && { ...d, description: v })}
-                className="bg-black text-white text-sm px-4 py-3.5 rounded-2xl border border-stone-800 mb-3"
-              />
-
-              {allSources.length > 0 && (
-                <>
-                  <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Source (optional)</Text>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-3">
-                    {allSources.map(src => (
-                      <TouchableOpacity
-                        key={src}
-                        onPress={() => setLoanEditDraft(d => d && { ...d, source: d.source === src ? '' : src })}
-                        className={`px-3.5 py-2 mr-2 rounded-full border ${loanEditDraft?.source === src ? 'bg-stone-600 border-stone-500' : 'bg-black border-stone-800'}`}
-                      >
-                        <Text className={`text-xs font-semibold uppercase tracking-wider ${loanEditDraft?.source === src ? 'text-white' : 'text-stone-500'}`}>{src}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </ScrollView>
-                </>
-              )}
-
-              <View className="flex-row items-center justify-between mb-3">
-                <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest ml-1">Set Due Date</Text>
-                <Switch
-                  value={loanEditDraft?.hasDueDate || false}
-                  onValueChange={v => setLoanEditDraft(d => d && { ...d, hasDueDate: v })}
-                  trackColor={{ false: '#292524', true: '#059669' }}
-                  thumbColor={loanEditDraft?.hasDueDate ? '#34d399' : '#78716c'}
-                />
-              </View>
-              {loanEditDraft?.hasDueDate && (
-                <>
-                  <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Month</Text>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-3">
-                    {monthNames.map((m, idx) => (
-                      <TouchableOpacity
-                        key={m}
-                        onPress={() => setLoanEditDraft(d => d && { ...d, dlMonth: idx })}
-                        className={`px-3.5 py-2 mr-2 rounded-full border ${loanEditDraft.dlMonth === idx ? 'bg-emerald-600 border-emerald-500' : 'bg-black border-stone-800'}`}
-                      >
-                        <Text className={`text-xs font-semibold uppercase tracking-wider ${loanEditDraft.dlMonth === idx ? 'text-white' : 'text-stone-500'}`}>{m}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </ScrollView>
-                  <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Day</Text>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-5">
-                    {Array.from({ length: new Date(loanEditDraft.dlYear, loanEditDraft.dlMonth + 1, 0).getDate() }, (_, i) => i + 1).map(d => (
-                      <TouchableOpacity
-                        key={d}
-                        onPress={() => setLoanEditDraft(ld => ld && { ...ld, dlDay: d })}
-                        className={`w-10 h-10 mr-1.5 rounded-full items-center justify-center border ${loanEditDraft.dlDay === d ? 'bg-emerald-600 border-emerald-500' : 'bg-black border-stone-800'}`}
-                      >
-                        <Text className={`text-xs font-semibold ${loanEditDraft.dlDay === d ? 'text-white' : 'text-stone-500'}`}>{d}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </ScrollView>
-                </>
-              )}
-
-              <View className="flex-row gap-3">
-                <TouchableOpacity onPress={handleDeleteLoanFromHistory} className="py-4 px-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 items-center">
-                  <FontAwesome name="trash" size={14} color="#f43f5e" />
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => setLoanEditDraft(null)} className="flex-1 py-4 rounded-2xl bg-stone-800 items-center">
-                  <Text className="text-white text-sm font-semibold uppercase tracking-wider">Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={handleSaveLoanEdit} disabled={savingLoanEdit} className="flex-1 py-4 rounded-2xl bg-emerald-600 items-center active:bg-emerald-500">
-                  {savingLoanEdit ? <ActivityIndicator color="white" /> : <Text className="text-white text-sm font-bold uppercase tracking-wider">Update</Text>}
-                </TouchableOpacity>
-              </View>
-          </ScrollView>
-        </SafeAreaView>
       </Modal>
     </SafeAreaView>
   );

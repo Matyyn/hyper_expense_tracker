@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import { isWeekend } from 'date-fns';
 
 export const INCOME_CATEGORY = 'Income';
+export const LENDING_CATEGORY = 'Lending';
 
 export interface Expense {
   id?: string;
@@ -155,7 +156,8 @@ export function useExpenseSync(userId: string | undefined, budgetFallback = 0, g
     enabled: !!userId,
   });
 
-  // Separate income from spend
+  // Separate income from spend. Lending counts as spend (lent money is out
+  // of your wallet) so it stays in the expenses bucket.
   const expenses = useMemo(() => allExpenses.filter(e => e.category !== INCOME_CATEGORY), [allExpenses]);
   const incomeEntries = useMemo(() => allExpenses.filter(e => e.category === INCOME_CATEGORY), [allExpenses]);
 
@@ -350,7 +352,9 @@ export function useExpenseSync(userId: string | undefined, budgetFallback = 0, g
       streak,
     },
     addExpense: addExpenseMutation.mutate,
+    addExpenseAsync: addExpenseMutation.mutateAsync,
     deleteExpense: deleteExpenseMutation.mutate,
+    deleteExpenseAsync: deleteExpenseMutation.mutateAsync,
     updateProfile: updateProfileMutation.mutate,
     updateTemplate: updateTemplateMutation.mutate,
     addTemplate: addTemplateMutation.mutate,
