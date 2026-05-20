@@ -82,8 +82,8 @@ function AuthHandler() {
   const { session, isInitialized } = useAuth();
   const segments = useSegments();
   const router = useRouter();
-  const notifListener = useRef<Notifications.EventSubscription>();
-  const responseListener = useRef<Notifications.EventSubscription>();
+  const notifListener = useRef<Notifications.EventSubscription | undefined>(undefined);
+  const responseListener = useRef<Notifications.EventSubscription | undefined>(undefined);
   // Tracks last routed session state to prevent duplicate navigations (e.g. React StrictMode)
   const lastRoutedSession = useRef<boolean | null>(null);
 

@@ -5,6 +5,7 @@ import { isWeekend } from 'date-fns';
 
 export const INCOME_CATEGORY = 'Income';
 export const LENDING_CATEGORY = 'Lending';
+export const LOAN_RETURN_CATEGORY = 'Loan Return';
 
 export interface Expense {
   id?: string;
@@ -131,10 +132,6 @@ export function useExpenseSync(userId: string | undefined, budgetFallback = 0, g
     enabled: !!userId,
   });
 
-  const monthlyBudget = profile?.monthly_budget || budgetFallback;
-  const savingsGoal = profile?.savings_goal || goalFallback;
-  const weeklyBudget = monthlyBudget / 4;
-
   const { data: allExpenses = [], isLoading } = useQuery({
     queryKey: ['expenses', userId],
     queryFn: async () => {
@@ -156,22 +153,109 @@ export function useExpenseSync(userId: string | undefined, budgetFallback = 0, g
     enabled: !!userId,
   });
 
-  // Separate income from spend. Lending counts as spend (lent money is out
-  // of your wallet) so it stays in the expenses bucket.
-  const expenses = useMemo(() => allExpenses.filter(e => e.category !== INCOME_CATEGORY), [allExpenses]);
-  const incomeEntries = useMemo(() => allExpenses.filter(e => e.category === INCOME_CATEGORY), [allExpenses]);
+  // Use a distinct query key ('loans_raw') so this plain table query never
+  // overwrites the loans_with_totals cache used by useLoans (key: 'loans').
+  const { data: loans = [] } = useQuery({
+    queryKey: ['loans_raw', userId],
+    queryFn: async () => {
+      if (!userId) return [];
+      const { data, error } = await supabase
+        .from('loans')
+        .select('id, expense_id, type, principal, created_at, settled_at')
+        .eq('user_id', userId);
+      if (error) throw error;
+      return data;
+    },
+    enabled: !!userId,
+  });
+
+  const borrowedThisMonth = useMemo(() => {
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    return loans
+      .filter(l => {
+        if (!l.created_at || l.type !== 'borrowed') return false;
+        if (l.settled_at) return false; // fully repaid — no longer adds to budget
+        const created = new Date(l.created_at);
+        return created >= startOfMonth;
+      })
+      .reduce((sum, l) => sum + Number(l.principal), 0);
+  }, [loans]);
+
+  const loanIds = useMemo(() => loans.map(l => l.id), [loans]);
+
+  const { data: loanPayments = [] } = useQuery({
+    queryKey: ['loan_payments_all', userId, loanIds.join(',')],
+    queryFn: async () => {
+      if (!userId || loanIds.length === 0) return [];
+      const { data, error } = await supabase
+        .from('loan_payments')
+        .select('*')
+        .in('loan_id', loanIds);
+      if (error) throw error;
+      return data;
+    },
+    enabled: !!userId && loanIds.length > 0,
+  });
+
+  const loanRelatedExpenseIds = useMemo(() => {
+    const ids = new Set<string>();
+    loans.forEach(l => {
+      if (l.expense_id) ids.add(l.expense_id);
+    });
+    loanPayments.forEach(p => {
+      if (p.expense_id) ids.add(p.expense_id);
+    });
+    return ids;
+  }, [loans, loanPayments]);
+
+  const baseMonthlyBudget = profile?.monthly_budget || budgetFallback;
+  const monthlyBudget = baseMonthlyBudget + borrowedThisMonth;
+  const savingsGoal = profile?.savings_goal || goalFallback;
+  const weeklyBudget = monthlyBudget / 4;
+
+  // expenses: all non-Income, non-LoanReturn, non-Loan-Related rows (includes Lending) — used for budget math.
+  // incomeEntries: regular Income only (salary etc.) — does NOT include Loan Return.
+  // loanReturnEntries: lent-money-returned entries — separately netted against Lending for budget.
+  // displayExpenses: expenses minus Lending — pure user spend for charts and category breakdown.
+  const expenses = useMemo(() =>
+    allExpenses.filter(e =>
+      e.category !== INCOME_CATEGORY &&
+      e.category !== LOAN_RETURN_CATEGORY &&
+      !loanRelatedExpenseIds.has(e.id || '')
+    ),
+    [allExpenses, loanRelatedExpenseIds]
+  );
+  const incomeEntries = useMemo(() =>
+    allExpenses.filter(e =>
+      e.category === INCOME_CATEGORY &&
+      !loanRelatedExpenseIds.has(e.id || '')
+    ),
+    [allExpenses, loanRelatedExpenseIds]
+  );
+  const loanReturnEntries = useMemo(() =>
+    allExpenses.filter(e => e.category === LOAN_RETURN_CATEGORY),
+    [allExpenses]
+  );
+  const displayExpenses = useMemo(() =>
+    expenses.filter(e => e.category !== LENDING_CATEGORY),
+    [expenses]
+  );
 
   const currentWeekStart = new Date();
   currentWeekStart.setDate(currentWeekStart.getDate() - currentWeekStart.getDay());
   currentWeekStart.setHours(0, 0, 0, 0);
 
-  const weeklyExpenses = expenses.filter(e => e.created_at && new Date(e.created_at) >= currentWeekStart);
+  const weeklyExpenses = displayExpenses.filter(e => e.created_at && new Date(e.created_at) >= currentWeekStart);
   const totalSpentWeekly = weeklyExpenses.reduce((sum, exp) => sum + Number(exp.amount), 0);
   const leftoverBudget = weeklyBudget - totalSpentWeekly;
   const totalSpentMonthly = expenses.reduce((sum, exp) => sum + Number(exp.amount), 0);
+  const displayTotalMonthly = displayExpenses.reduce((sum, exp) => sum + Number(exp.amount), 0);
   const totalIncomeMonthly = incomeEntries.reduce((sum, exp) => sum + Number(exp.amount), 0);
+  const totalLoanReturns = loanReturnEntries.reduce((sum, exp) => sum + Number(exp.amount), 0);
   const netMonthly = totalIncomeMonthly - totalSpentMonthly;
-  const savingsThisMonth = monthlyBudget - totalSpentMonthly;
+  // savingsThisMonth: budget + regular income - all spend (incl. Lending outflows)
+  const savingsThisMonth = monthlyBudget + totalIncomeMonthly - totalSpentMonthly;
 
   const now = new Date();
   const daysLeft = 7 - now.getDay();
@@ -212,7 +296,10 @@ export function useExpenseSync(userId: string | undefined, budgetFallback = 0, g
       console.error('Add Expense Error:', e);
       if (ctx?.prev) queryClient.setQueryData(['expenses', userId], ctx.prev);
     },
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['expenses', userId] }),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['expenses', userId] });
+      queryClient.invalidateQueries({ queryKey: ['expenses-history'] });
+    },
   });
 
   const deleteExpenseMutation = useMutation({
@@ -230,7 +317,10 @@ export function useExpenseSync(userId: string | undefined, budgetFallback = 0, g
       console.error('Delete Expense Error:', e);
       if (ctx?.prev) queryClient.setQueryData(['expenses', userId], ctx.prev);
     },
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['expenses', userId] }),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['expenses', userId] });
+      queryClient.invalidateQueries({ queryKey: ['expenses-history'] });
+    },
   });
 
   const updateProfileMutation = useMutation({
@@ -314,19 +404,20 @@ export function useExpenseSync(userId: string | undefined, budgetFallback = 0, g
     return { commuteTemplates: commute, foodTemplates: food, otherTemplates: other, templateGroups: groups, categoryMap: catMap };
   }, [quickTemplates, categories]);
 
-  // Per-category spending this month
+  // Per-category spending this month (display expenses only — no loan categories)
   const categorySpend = useMemo(() => {
     const map: Record<string, number> = {};
-    expenses.forEach(e => {
+    displayExpenses.forEach(e => {
       map[e.category] = (map[e.category] || 0) + Number(e.amount);
     });
     return map;
-  }, [expenses]);
+  }, [displayExpenses]);
 
   return {
     expenses,
     incomeEntries,
     allExpenses,
+    displayExpenses,
     weeklyExpenses,
     profile,
     categories,
@@ -338,6 +429,7 @@ export function useExpenseSync(userId: string | undefined, budgetFallback = 0, g
     templateGroups,
     categorySpend,
     isLoading,
+    loanRelatedExpenseIds,
     metrics: {
       leftoverBudget,
       burnRate,
@@ -346,6 +438,7 @@ export function useExpenseSync(userId: string | undefined, budgetFallback = 0, g
       monthlyBudget,
       savingsThisMonth,
       totalSpentMonthly,
+      displayTotalMonthly,
       totalIncomeMonthly,
       netMonthly,
       savingsGoal,

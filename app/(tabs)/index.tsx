@@ -32,6 +32,7 @@ import { useCurrency } from "../../components/CurrencyProvider";
 import { useNotification } from "../../components/NotificationProvider";
 import {
   INCOME_CATEGORY,
+  LOAN_RETURN_CATEGORY,
   QuickTemplate,
   useExpenseSync,
 } from "../../hooks/useExpenseSync";
@@ -199,6 +200,8 @@ export default function Dashboard() {
   const {
     expenses,
     incomeEntries,
+    allExpenses,
+    displayExpenses,
     weeklyExpenses,
     metrics,
     categories,
@@ -227,7 +230,9 @@ export default function Dashboard() {
     burnRate,
     weeklyBudget,
     monthlyBudget,
+    totalSavings,
     totalSpentMonthly,
+    displayTotalMonthly,
     totalIncomeMonthly,
     savingsGoal,
     streak,
@@ -384,6 +389,8 @@ export default function Dashboard() {
   };
 
   const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  // weeklyExpenses already excludes loan categories (via displayExpenses in hook)
   const weekData = new Array(7).fill(0);
   weeklyExpenses.forEach((exp) => {
     if (exp.created_at) {
@@ -392,9 +399,10 @@ export default function Dashboard() {
   });
   const maxExpense = Math.max(...weekData, 1);
 
+  // displayExpenses excludes Lending and Loan Return — pure user spend
   const todayDate = today.getDate();
   const monthData = new Array(todayDate).fill(0);
-  expenses.forEach((exp) => {
+  displayExpenses.forEach((exp) => {
     if (exp.created_at) {
       const d = new Date(exp.created_at);
       if (
@@ -463,7 +471,7 @@ export default function Dashboard() {
       if (original && original.amount !== amount) {
         updateTemplate({ id: templateId, amount });
       }
-      addExpense({ amount, description: title, category, source: templateSources[templateId] || activeSource || undefined });
+      addExpense({ amount, description: title, category, source: templateSources[templateId] || savedSources[0]?.name || 'Cash' });
       showNotification(
         `Logged ${format(amount)} for ${title}`,
         "success",
@@ -615,13 +623,25 @@ export default function Dashboard() {
 
   const showOnboardingGate = user?.user_metadata?.is_new_user === true;
 
-  const perSourceSpend = expenses
-    .filter(e => e.category !== INCOME_CATEGORY)
-    .reduce((acc, exp) => {
-      const src = (exp as any).source as string | undefined;
-      if (src) acc[src] = (acc[src] || 0) + Number(exp.amount);
-      return acc;
-    }, {} as Record<string, number>);
+  const perSourceSpendOnly = allExpenses.reduce((acc, exp) => {
+    const src = (exp as any).source as string | undefined;
+    if (!src) return acc;
+    const amount = Number(exp.amount);
+    if (exp.category !== INCOME_CATEGORY && exp.category !== LOAN_RETURN_CATEGORY) {
+      acc[src] = (acc[src] || 0) + amount;
+    }
+    return acc;
+  }, {} as Record<string, number>);
+
+  const perSourceIncome = allExpenses.reduce((acc, exp) => {
+    const src = (exp as any).source as string | undefined;
+    if (!src) return acc;
+    const amount = Number(exp.amount);
+    if (exp.category === INCOME_CATEGORY) {
+      acc[src] = (acc[src] || 0) + amount;
+    }
+    return acc;
+  }, {} as Record<string, number>);
 
   const handleOnboardingSetup = async () => {
     const budget = Number(obBudget);
@@ -1001,7 +1021,7 @@ export default function Dashboard() {
                   Daily Avg
                 </Text>
                 <Text className="text-white text-base font-bold tracking-tight">
-                  {format((() => { const first = expenses.filter(e => e.created_at).map(e => new Date(e.created_at!).setHours(0,0,0,0)).reduce((m, d) => d < m ? d : m, Infinity); const days = first < Infinity ? Math.floor((new Date().setHours(0,0,0,0) - first) / 86400000) + 1 : 0; return days > 0 ? totalSpentMonthly / days : 0; })())}
+                  {format((() => { const first = displayExpenses.filter(e => e.created_at).map(e => new Date(e.created_at!).setHours(0,0,0,0)).reduce((m, d) => d < m ? d : m, Infinity); const days = first < Infinity ? Math.floor((new Date().setHours(0,0,0,0) - first) / 86400000) + 1 : 0; return days > 0 ? displayTotalMonthly / days : 0; })())}
                 </Text>
               </View>
               <View className="w-px bg-black/20" />
@@ -1010,7 +1030,7 @@ export default function Dashboard() {
                   Total Spent
                 </Text>
                 <Text className="text-white text-base font-bold tracking-tight">
-                  {format(totalSpentMonthly)}
+                  {format(displayTotalMonthly)}
                 </Text>
               </View>
               <View className="w-px bg-black/20" />
@@ -1024,22 +1044,24 @@ export default function Dashboard() {
               </View>
             </View>
 
-            {savedSources.length > 0 && Object.keys(perSourceSpend).length > 0 && (
+            {savedSources.length > 0 && (Object.keys(perSourceSpendOnly).length > 0 || Object.keys(perSourceIncome).length > 0) && (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 12 }}>
                 {savedSources.map(src => {
-                  const spent = perSourceSpend[src.name] || 0;
-                  const pct = src.budget > 0 ? Math.min(100, (spent / src.budget) * 100) : null;
-                  const over = src.budget > 0 && spent > src.budget;
+                  const income = perSourceIncome[src.name] || 0;
+                  const budget = src.budget + income;
+                  const spent = Math.max(0, perSourceSpendOnly[src.name] || 0);
+                  const pct = budget > 0 ? Math.min(100, (spent / budget) * 100) : null;
+                  const over = budget > 0 && spent > budget;
                   return (
                     <View key={src.name} style={{ marginRight: 8, backgroundColor: 'rgba(0,0,0,0.25)', borderRadius: 14, padding: 10, minWidth: 80 }}>
                       <Text style={{ color: 'rgba(255,255,255,0.55)', fontSize: 9, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 3 }}>{src.name}</Text>
                       <Text style={{ color: over ? '#fca5a5' : '#fff', fontSize: 14, fontWeight: '800', letterSpacing: -0.3 }}>{format(spent)}</Text>
-                      {src.budget > 0 && (
+                      {budget > 0 && (
                         <>
                           <View style={{ height: 2, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 99, marginTop: 5, overflow: 'hidden' }}>
                             <View style={{ height: '100%', width: `${pct ?? 0}%`, backgroundColor: over ? '#f87171' : 'rgba(255,255,255,0.5)', borderRadius: 99 }} />
                           </View>
-                          <Text style={{ color: 'rgba(255,255,255,0.35)', fontSize: 9, marginTop: 3 }}>of {format(src.budget)}</Text>
+                          <Text style={{ color: 'rgba(255,255,255,0.35)', fontSize: 9, marginTop: 3 }}>of {format(budget)}</Text>
                         </>
                       )}
                     </View>
@@ -1064,7 +1086,7 @@ export default function Dashboard() {
                 {chartView === "monthly" && (
                   <View className="ml-2 px-2 py-0.5 bg-rose-500/15 rounded-full border border-rose-500/20">
                     <Text className="text-rose-400 text-[10px] font-bold">
-                      {format(totalSpentMonthly)}
+                      {format(displayTotalMonthly)}
                     </Text>
                   </View>
                 )}

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, ScrollView, useWindowDimensions, ActivityIndicator, RefreshControl, Modal, KeyboardAvoidingView, Platform, TouchableOpacity, TextInput, Pressable } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useExpenseSync, INCOME_CATEGORY } from '../../hooks/useExpenseSync';
+import { useExpenseSync, INCOME_CATEGORY, LOAN_RETURN_CATEGORY } from '../../hooks/useExpenseSync';
 import { useAuth } from '../../components/AuthProvider';
 import { useCurrency } from '../../components/CurrencyProvider';
 import { useNotification } from '../../components/NotificationProvider';
@@ -29,12 +29,12 @@ export default function AnalyticsScreen() {
   const { format, symbol } = useCurrency();
   const { showNotification } = useNotification();
   const [refreshing, setRefreshing] = useState(false);
-  const { expenses, weeklyExpenses, isLoading, metrics, categoryMap, categories, categorySpend } = useExpenseSync(
+  const { expenses, allExpenses, displayExpenses, weeklyExpenses, isLoading, metrics, categoryMap, categories, categorySpend } = useExpenseSync(
     user?.id,
     (user?.user_metadata?.monthly_budget as number) || 0,
     (user?.user_metadata?.savings_goal as number) || 0,
   );
-  const { totalSpentMonthly, monthlyBudget } = metrics;
+  const { totalSpentMonthly, totalIncomeMonthly, monthlyBudget, displayTotalMonthly } = metrics;
 
   const initialBudgets: Record<string, number> = (user?.user_metadata?.category_budgets as Record<string, number>) || {};
   const [showBudgetsModal, setShowBudgetsModal] = useState(false);
@@ -68,7 +68,7 @@ export default function AnalyticsScreen() {
     }
   };
 
-  const categoryTotals = expenses.reduce((acc, exp) => {
+  const categoryTotals = displayExpenses.reduce((acc, exp) => {
     const amount = Number(exp.amount) || 0;
     if (amount > 0) {
       const cat = exp.category || 'Uncategorized';
@@ -88,36 +88,40 @@ export default function AnalyticsScreen() {
     limit: initialBudgets[cat],
   })).sort((a, b) => b.amount - a.amount);
 
-  const sourceTotals = expenses.reduce((acc, exp) => {
+  const sourceTotals = allExpenses.reduce((acc, exp) => {
     const amount = Number(exp.amount) || 0;
     const src = (exp as any).source;
-    if (amount > 0 && exp.category !== INCOME_CATEGORY && src) {
+    if (!src || amount <= 0) return acc;
+    if (exp.category === INCOME_CATEGORY || exp.category === LOAN_RETURN_CATEGORY) {
+      acc[src] = (acc[src] || 0) - amount;
+    } else {
       acc[src] = (acc[src] || 0) + amount;
     }
     return acc;
   }, {} as Record<string, number>);
-  const sourceGrandTotal = Object.values(sourceTotals).reduce((a, b) => a + b, 0) || 1;
-  const sourceList = Object.entries(sourceTotals)
+  const positiveSourceTotals = Object.fromEntries(Object.entries(sourceTotals).filter(([, v]) => v > 0));
+  const sourceGrandTotal = Object.values(positiveSourceTotals).reduce((a, b) => a + b, 0) || 1;
+  const sourceList = Object.entries(positiveSourceTotals)
     .map(([name, amount]) => ({ name, amount, percentage: (amount / sourceGrandTotal) * 100 }))
     .sort((a, b) => b.amount - a.amount);
 
   const SOURCE_COLORS = ['#818cf8', '#34d399', '#fbbf24', '#f43f5e', '#a78bfa', '#38bdf8'];
 
   const todayMidnight = new Date().setHours(0, 0, 0, 0);
-  const firstSpend = expenses
+  const firstSpend = displayExpenses
     .filter(e => e.created_at)
     .map(e => new Date(e.created_at!).setHours(0, 0, 0, 0))
     .reduce((min, d) => d < min ? d : min, Infinity);
   const daysSinceFirst = firstSpend < Infinity
     ? Math.floor((todayMidnight - firstSpend) / 86400000) + 1
     : 0;
-  const dailyAvg = daysSinceFirst > 0 ? totalSpentMonthly / daysSinceFirst : 0;
+  const dailyAvg = daysSinceFirst > 0 ? displayTotalMonthly / daysSinceFirst : 0;
 
   const today = new Date();
   const currentWeekOfMonth = Math.ceil(today.getDate() / 7);
 
   const weeklyMonthData = [0, 0, 0, 0];
-  expenses.forEach(exp => {
+  displayExpenses.forEach(exp => {
     if (exp.created_at) {
       const d = new Date(exp.created_at);
       if (d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear()) {
@@ -135,7 +139,7 @@ export default function AnalyticsScreen() {
   });
   const maxDay = Math.max(...weekDayData, 1);
 
-  const budgetUsedPct = Math.min(100, (totalSpentMonthly / Math.max(monthlyBudget, 1)) * 100);
+  const budgetUsedPct = Math.min(100, (displayTotalMonthly / Math.max(monthlyBudget, 1)) * 100);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -167,7 +171,7 @@ export default function AnalyticsScreen() {
               </View>
               <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest">Total</Text>
             </View>
-            <Text className="text-rose-400 text-lg font-bold tracking-tight">{format(totalSpentMonthly)}</Text>
+            <Text className="text-rose-400 text-lg font-bold tracking-tight">{format(displayTotalMonthly)}</Text>
           </View>
           <View className="flex-1 mx-1 bg-stone-900 border border-stone-800 rounded-3xl p-4">
             <View className="flex-row items-center mb-2">
@@ -361,7 +365,7 @@ export default function AnalyticsScreen() {
             <View className={`h-full rounded-full ${budgetUsedPct >= 90 ? 'bg-rose-500' : budgetUsedPct >= 70 ? 'bg-amber-500' : 'bg-emerald-500'}`} style={{ width: `${budgetUsedPct}%` }} />
           </View>
           <View className="flex-row justify-between">
-            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest">Spent {format(totalSpentMonthly)}</Text>
+            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest">Spent {format(displayTotalMonthly)}</Text>
             <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest">of {format(monthlyBudget)}</Text>
           </View>
         </View>

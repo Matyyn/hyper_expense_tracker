@@ -56,7 +56,7 @@ export default function HistoryScreen() {
   const queryClient = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
 
-  const { deleteExpense, categoryMap, categories } = useExpenseSync(
+  const { deleteExpense, categoryMap, categories, loanRelatedExpenseIds } = useExpenseSync(
     user?.id,
     (user?.user_metadata?.monthly_budget as number) || 0,
     (user?.user_metadata?.savings_goal as number) || 0,
@@ -142,11 +142,11 @@ export default function HistoryScreen() {
   const configuredSources = ((user?.user_metadata?.custom_sources as Array<{name: string}>) || []).map((s: {name: string}) => s.name);
   const allSources = Array.from(new Set([...DEFAULT_SOURCES, ...configuredSources, ...dataSources, ...extraSources]));
 
-  // Hide legacy "Lending" category rows (side-effects of the old loan flow).
-  // Loans now live in their own tables and are merged in as synthetic entries below.
+  // Hide all loan-related expense rows (creations and repayments).
+  // These are managed and viewed in the Loans section, so filtering avoids duplicates/clutter.
   const visibleExpenses = useMemo(
-    () => historyExpenses.filter((e: any) => e.category !== 'Lending'),
-    [historyExpenses]
+    () => historyExpenses.filter((e: any) => !loanRelatedExpenseIds?.has(e.id)),
+    [historyExpenses, loanRelatedExpenseIds]
   );
 
   const loanHistoryItems: any[] = loans.map(loan => ({
