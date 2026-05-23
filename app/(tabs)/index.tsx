@@ -210,6 +210,7 @@ export default function Dashboard() {
     foodTemplates,
     otherTemplates,
     categorySpend,
+    loanRelatedExpenseIds,
     addExpense,
     updateProfile,
     updateTemplate,
@@ -623,9 +624,12 @@ export default function Dashboard() {
 
   const showOnboardingGate = user?.user_metadata?.is_new_user === true;
 
+  // Skip loan-linked expenses (borrowed Income & repayment Lending) so per-source
+  // totals only reflect real user spend/income, matching the global metrics.
   const perSourceSpendOnly = allExpenses.reduce((acc, exp) => {
     const src = (exp as any).source as string | undefined;
     if (!src) return acc;
+    if (loanRelatedExpenseIds.has(exp.id || '')) return acc;
     const amount = Number(exp.amount);
     if (exp.category !== INCOME_CATEGORY && exp.category !== LOAN_RETURN_CATEGORY) {
       acc[src] = (acc[src] || 0) + amount;
@@ -636,6 +640,7 @@ export default function Dashboard() {
   const perSourceIncome = allExpenses.reduce((acc, exp) => {
     const src = (exp as any).source as string | undefined;
     if (!src) return acc;
+    if (loanRelatedExpenseIds.has(exp.id || '')) return acc;
     const amount = Number(exp.amount);
     if (exp.category === INCOME_CATEGORY) {
       acc[src] = (acc[src] || 0) + amount;

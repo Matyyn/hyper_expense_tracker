@@ -162,6 +162,12 @@ export function useLoans(userId: string | undefined) {
           if (payExpenseId) await supabase.from('expenses').delete().eq('id', payExpenseId);
           throw payErr;
         }
+        if (input.paid >= input.principal) {
+          await supabase
+            .from('loans')
+            .update({ settled_at: new Date().toISOString() })
+            .eq('id', loan.id);
+        }
       }
       return loan;
     },
@@ -238,6 +244,14 @@ export function useLoans(userId: string | undefined) {
       if (error) {
         if (expenseId) await supabase.from('expenses').delete().eq('id', expenseId);
         throw error;
+      }
+
+      // Auto-settle once cumulative payments cover the principal (both lent and borrowed).
+      if (!loan.settled_at && loan.paid + amount >= loan.principal) {
+        await supabase
+          .from('loans')
+          .update({ settled_at: new Date().toISOString() })
+          .eq('id', loanId);
       }
     },
     onSettled: invalidate,

@@ -169,19 +169,6 @@ export function useExpenseSync(userId: string | undefined, budgetFallback = 0, g
     enabled: !!userId,
   });
 
-  const borrowedThisMonth = useMemo(() => {
-    const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    return loans
-      .filter(l => {
-        if (!l.created_at || l.type !== 'borrowed') return false;
-        if (l.settled_at) return false; // fully repaid — no longer adds to budget
-        const created = new Date(l.created_at);
-        return created >= startOfMonth;
-      })
-      .reduce((sum, l) => sum + Number(l.principal), 0);
-  }, [loans]);
-
   const loanIds = useMemo(() => loans.map(l => l.id), [loans]);
 
   const { data: loanPayments = [] } = useQuery({
@@ -197,6 +184,29 @@ export function useExpenseSync(userId: string | undefined, budgetFallback = 0, g
     },
     enabled: !!userId && loanIds.length > 0,
   });
+
+  // Outstanding borrowed balance from loans created this month.
+  // Subtract payments (full or partial) so wallet/analytics reflect repayments
+  // immediately, even when the user hasn't tapped "Settle" to stamp settled_at.
+  const borrowedThisMonth = useMemo(() => {
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const paidByLoan = loanPayments.reduce((acc, p) => {
+      acc[p.loan_id] = (acc[p.loan_id] || 0) + Number(p.amount);
+      return acc;
+    }, {} as Record<string, number>);
+    return loans
+      .filter(l => {
+        if (!l.created_at || l.type !== 'borrowed') return false;
+        if (l.settled_at) return false;
+        const created = new Date(l.created_at);
+        return created >= startOfMonth;
+      })
+      .reduce((sum, l) => {
+        const paid = paidByLoan[l.id] || 0;
+        return sum + Math.max(0, Number(l.principal) - paid);
+      }, 0);
+  }, [loans, loanPayments]);
 
   const loanRelatedExpenseIds = useMemo(() => {
     const ids = new Set<string>();

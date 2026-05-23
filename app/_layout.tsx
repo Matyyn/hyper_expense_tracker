@@ -132,7 +132,13 @@ function AuthHandler() {
         <Stack screenOptions={{ contentStyle: { backgroundColor: '#000' } }}>
           <Stack.Screen name="(auth)" options={{ headerShown: false }} />
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-          <Stack.Screen name="modal" options={{ title: 'App Guide', headerStyle: { backgroundColor: '#000' }, headerTintColor: '#34d399', headerShadowVisible: false, contentStyle: { backgroundColor: '#000' } }} />
+          <Stack.Screen
+            name="modal"
+            options={{
+              headerShown: false,
+              contentStyle: { backgroundColor: '#000' },
+            }}
+          />
         </Stack>
       </ThemeProvider>
       {!inCorrectRouteGroup && (
