@@ -146,17 +146,8 @@ export default function ModalScreen() {
           title="Analytics"
           body="See exactly where your money goes. Category breakdown, weekly trend, source split, and budget utilization — all for the current month."
           tips={[
-            { icon: '›', text: 'Tap Set Limits to set per-category alert thresholds (80% and 100%)' },
-            { icon: '›', text: 'You’ll get a push notification when a category crosses its limit' },
-          ]}
-        />
-
-        <GuideCard
-          emoji="🔔"
-          title="Notifications & Reminders"
-          body="Push notifications alert you when a category hits 80% or 100% of its limit, and 3 / 1 day before your budget period expires."
-          tips={[
-            { icon: '›', text: 'Toggle daily reminders from Settings if you want a nudge to log' },
+            { icon: '>', text: 'Tap Set Limits to set per-category alert thresholds (80% and 100%)' },
+            { icon: '>', text: 'An in-app alert appears when a category crosses its limit' },
           ]}
         />
 

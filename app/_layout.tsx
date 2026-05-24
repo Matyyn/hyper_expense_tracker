@@ -2,7 +2,6 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { DarkTheme, ThemeProvider } from '@react-navigation/native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useFonts } from 'expo-font';
-import * as Notifications from 'expo-notifications';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect, useRef } from 'react';
@@ -82,27 +81,8 @@ function AuthHandler() {
   const { session, isInitialized } = useAuth();
   const segments = useSegments();
   const router = useRouter();
-  const notifListener = useRef<Notifications.EventSubscription | undefined>(undefined);
-  const responseListener = useRef<Notifications.EventSubscription | undefined>(undefined);
   // Tracks last routed session state to prevent duplicate navigations (e.g. React StrictMode)
   const lastRoutedSession = useRef<boolean | null>(null);
-
-  useEffect(() => {
-    notifListener.current = Notifications.addNotificationReceivedListener(() => {
-      // notification received while app is foregrounded — handled by setNotificationHandler
-    });
-
-    responseListener.current = Notifications.addNotificationResponseReceivedListener(response => {
-      const screen = response.notification.request.content.data?.screen as string | undefined;
-      if (screen === 'analytics') router.push('/(tabs)/analytics');
-      else router.push('/(tabs)');
-    });
-
-    return () => {
-      notifListener.current?.remove();
-      responseListener.current?.remove();
-    };
-  }, []);
 
   const inAuthGroup = segments[0] === '(auth)';
   const onResetPassword = segments[1] === 'reset-password';

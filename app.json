@@ -19,7 +19,6 @@
     },
     "android": {
       "package": "com.bazilsb.hyperexpense",
-      "permissions": ["android.permission.POST_NOTIFICATIONS", "android.permission.RECEIVE_BOOT_COMPLETED", "android.permission.SCHEDULE_EXACT_ALARM"],
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
@@ -37,13 +36,6 @@
       "expo-router",
       "expo-secure-store",
       "expo-web-browser",
-      [
-        "expo-notifications",
-        {
-          "icon": "./assets/images/icon.png",
-          "color": "#34d399"
-        }
-      ]
     ],
     "experiments": {
       "typedRoutes": true

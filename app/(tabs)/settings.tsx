@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, TextInput, ActivityIndicator, Modal, KeyboardAvoidingView, Platform, Switch, Pressable } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, TextInput, ActivityIndicator, Modal, KeyboardAvoidingView, Platform, Pressable } from 'react-native';
 import { Link } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -8,7 +8,6 @@ import { useNotification } from '../../components/NotificationProvider';
 import { useCurrency } from '../../components/CurrencyProvider';
 import { supabase } from '../../lib/supabase';
 import { CURRENCY_LIST, CurrencyCode } from '../../lib/currency';
-import { scheduleDailyReminder, cancelDailyReminder, requestNotificationPermissions } from '../../lib/notifications';
 
 function SectionTitle({ icon, label, color = '#34d399' }: { icon: React.ComponentProps<typeof FontAwesome>['name']; label: string; color?: string }) {
   return (
@@ -59,41 +58,10 @@ export default function SettingsScreen() {
   const [nameInput, setNameInput] = useState(initialName);
   const [isSavingName, setIsSavingName] = useState(false);
 
-  // In-app reminder
-  const initialReminder = user?.user_metadata?.reminder_enabled !== false;
-  const [reminderOn, setReminderOn] = useState(initialReminder);
-  const [reminderBusy, setReminderBusy] = useState(false);
-
   // Currency
   const [currencyBusy, setCurrencyBusy] = useState(false);
 
   useEffect(() => { setNameInput(initialName); }, [initialName]);
-  useEffect(() => { setReminderOn(initialReminder); }, [initialReminder]);
-
-  const handleToggleReminder = async (value: boolean) => {
-    setReminderOn(value);
-    setReminderBusy(true);
-    try {
-      const { error } = await supabase.auth.updateUser({ data: { reminder_enabled: value } });
-      if (error) throw error;
-      if (value) {
-        const granted = await scheduleDailyReminder(20, 0);
-        if (!granted) {
-          showNotification('Enable notifications in device settings', 'error');
-          return;
-        }
-        showNotification('Daily reminder set for 8:00 PM', 'success');
-      } else {
-        await cancelDailyReminder();
-        showNotification('Reminder disabled', 'info');
-      }
-    } catch (e: any) {
-      setReminderOn(!value);
-      showNotification(e.message || 'Could not save preference', 'error');
-    } finally {
-      setReminderBusy(false);
-    }
-  };
 
   const handlePickCurrency = async (code: CurrencyCode) => {
     setCurrencyBusy(true);
@@ -235,28 +203,6 @@ export default function SettingsScreen() {
               </View>
               <FontAwesome name="chevron-right" size={12} color="#52525b" />
             </TouchableOpacity>
-          </View>
-
-          {/* Reminders */}
-          <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-4">
-            <SectionTitle icon="bell" label="Reminders" />
-            <View className="flex-row items-center justify-between">
-              <View className="flex-1 pr-3">
-                <Text className="text-white text-sm font-semibold">Daily Log Reminder</Text>
-                <Text className="text-stone-500 text-xs mt-0.5">Show a banner on the wallet if you haven't logged today</Text>
-              </View>
-              {reminderBusy ? (
-                <ActivityIndicator color="#34d399" />
-              ) : (
-                <Switch
-                  value={reminderOn}
-                  onValueChange={handleToggleReminder}
-                  trackColor={{ false: '#292524', true: '#10b981' }}
-                  thumbColor={reminderOn ? '#fff' : '#78716c'}
-                  ios_backgroundColor="#292524"
-                />
-              )}
-            </View>
           </View>
 
           {/* Security */}

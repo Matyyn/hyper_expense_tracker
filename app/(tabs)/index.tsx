@@ -37,7 +37,6 @@ import {
   useExpenseSync,
 } from "../../hooks/useExpenseSync";
 import { supabase } from "../../lib/supabase";
-import { sendBudgetAlert, sendBudgetExpiryAlert, requestNotificationPermissions } from "../../lib/notifications";
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -306,13 +305,6 @@ export default function Dashboard() {
   }, [user?.user_metadata?.budget_expiry]);
 
   useEffect(() => {
-    if (!user?.id) return;
-    requestNotificationPermissions();
-  }, [user?.id]);
-
-  const expiryNotifSentRef = useRef<string | null>(null);
-
-  useEffect(() => {
     const all = [...commuteTemplates, ...foodTemplates, ...otherTemplates];
     if (all.length === 0) return;
     setTemplateAmounts((prev) => {
@@ -364,14 +356,6 @@ export default function Dashboard() {
     daysUntilExpiry > 0 ? monthlyLeftover / daysUntilExpiry : monthlyLeftover;
   const daysLeftInMonth = endOfMonth.getDate() - today.getDate();
 
-  useEffect(() => {
-    if (!storedExpiry || isBudgetExpired || monthlyLeftover <= 0) return;
-    if (daysUntilExpiry !== 3 && daysUntilExpiry !== 1) return;
-    const key = `${storedExpiry}-${daysUntilExpiry}`;
-    if (expiryNotifSentRef.current === key) return;
-    expiryNotifSentRef.current = key;
-    sendBudgetExpiryAlert(daysUntilExpiry, format(monthlyLeftover));
-  }, [daysUntilExpiry, storedExpiry, isBudgetExpired]);
 
   const handleTransferToSavings = async () => {
     if (monthlyLeftover <= 0) return;
@@ -450,10 +434,8 @@ export default function Dashboard() {
     const pctAfter = (after / limit) * 100;
     if (pctBefore < 100 && pctAfter >= 100) {
       showNotification(`${category} budget exceeded`, "error");
-      sendBudgetAlert(category, 100);
     } else if (pctBefore < 80 && pctAfter >= 80) {
       showNotification(`${category} at ${Math.round(pctAfter)}% of budget`, "info");
-      sendBudgetAlert(category, Math.round(pctAfter));
     }
   };
 
