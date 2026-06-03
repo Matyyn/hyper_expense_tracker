@@ -1,3 +1,27 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  /* Light theme (default). RGB triples — consumed by rgb(var(--x) / <alpha>). */
+  :root {
+    --color-app: 250 250 249;      /* stone-50  */
+    --color-surface: 255 255 255;  /* white     */
+    --color-elevated: 245 245 244; /* stone-100 */
+    --color-line: 231 229 228;     /* stone-200 */
+    --color-ink: 28 25 23;         /* stone-900 */
+    --color-muted: 87 83 74;       /* stone-600 */
+    --color-faint: 168 162 158;    /* stone-400 */
+  }
+
+  /* Dark theme — applied when the `.dark` class is active (NativeWind colorScheme). */
+  .dark:root {
+    --color-app: 0 0 0;            /* black     */
+    --color-surface: 28 25 23;     /* stone-900 */
+    --color-elevated: 0 0 0;       /* black     */
+    --color-line: 41 37 36;        /* stone-800 */
+    --color-ink: 255 255 255;      /* white     */
+    --color-muted: 168 162 158;    /* stone-400 */
+    --color-faint: 87 83 74;       /* stone-600 */
+  }
+}

@@ -54,7 +54,7 @@ export default function ResetPasswordScreen() {
   };
 
   return (
-    <SafeAreaView className="flex-1 bg-black">
+    <SafeAreaView className="flex-1 bg-app">
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
@@ -69,18 +69,18 @@ export default function ResetPasswordScreen() {
             <View className="w-16 h-16 bg-emerald-500/10 rounded-2xl items-center justify-center mb-6 border border-emerald-500/20">
               <FontAwesome name="lock" size={28} color="#34d399" />
             </View>
-            <Text className="text-3xl font-bold text-white tracking-tight text-center">Set New Password</Text>
-            <Text className="text-stone-400 mt-2 text-sm text-center">Pick a strong password — at least 6 characters.</Text>
+            <Text className="text-3xl font-bold text-ink tracking-tight text-center">Set New Password</Text>
+            <Text className="text-muted mt-2 text-sm text-center">Pick a strong password — at least 6 characters.</Text>
           </View>
 
           {!tokenReady ? (
             <View className="items-center mb-6">
               <ActivityIndicator color="#34d399" />
-              <Text className="text-stone-500 mt-3 text-xs font-semibold uppercase tracking-widest">Preparing...</Text>
+              <Text className="text-muted mt-3 text-xs font-semibold uppercase tracking-widest">Preparing...</Text>
             </View>
           ) : (
             <>
-              <View className="mb-3 flex-row items-center bg-stone-900 rounded-2xl border border-stone-800">
+              <View className="mb-3 flex-row items-center bg-surface rounded-2xl border border-line">
                 <TextInput
                   placeholder="New password"
                   placeholderTextColor="#78716c"
@@ -88,14 +88,14 @@ export default function ResetPasswordScreen() {
                   onChangeText={setPassword}
                   secureTextEntry={hidden}
                   autoFocus
-                  className="flex-1 text-white text-sm px-5 py-4"
+                  className="flex-1 text-ink text-sm px-5 py-4"
                 />
                 <TouchableOpacity onPress={() => setHidden(h => !h)} className="px-4 py-4">
                   <FontAwesome name={hidden ? 'eye' : 'eye-slash'} size={16} color="#78716c" />
                 </TouchableOpacity>
               </View>
 
-              <View className="mb-6 flex-row items-center bg-stone-900 rounded-2xl border border-stone-800">
+              <View className="mb-6 flex-row items-center bg-surface rounded-2xl border border-line">
                 <TextInput
                   placeholder="Confirm password"
                   placeholderTextColor="#78716c"
@@ -104,7 +104,7 @@ export default function ResetPasswordScreen() {
                   secureTextEntry={hidden}
                   onSubmitEditing={handleReset}
                   returnKeyType="done"
-                  className="flex-1 text-white text-sm px-5 py-4"
+                  className="flex-1 text-ink text-sm px-5 py-4"
                 />
               </View>
 
@@ -121,7 +121,7 @@ export default function ResetPasswordScreen() {
           )}
 
           <TouchableOpacity onPress={() => router.replace('/(auth)/login')} className="items-center py-2 active:opacity-70">
-            <Text className="text-stone-400 text-sm">Back to <Text className="text-emerald-400 font-semibold">Sign In</Text></Text>
+            <Text className="text-muted text-sm">Back to <Text className="text-emerald-400 font-semibold">Sign In</Text></Text>
           </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>

@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Tabs } from 'expo-router';
 import { View } from 'react-native';
+import { useTheme } from '@/components/ThemeProvider';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -49,13 +50,14 @@ function AnimatedTabIcon({ name, color, focused }: {
 }
 
 export default function TabLayout() {
+  const { colors } = useTheme();
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: '#34d399',
-        tabBarInactiveTintColor: '#52525b',
+        tabBarActiveTintColor: colors.accent,
+        tabBarInactiveTintColor: colors.faint,
         tabBarStyle: {
-          backgroundColor: '#000',
+          backgroundColor: colors.app,
           borderTopWidth: 0,
           elevation: 0,
           shadowOpacity: 0,

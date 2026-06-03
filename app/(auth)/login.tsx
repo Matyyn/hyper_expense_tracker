@@ -141,7 +141,7 @@ export default function LoginScreen() {
   };
 
   return (
-    <SafeAreaView className="flex-1 bg-black">
+    <SafeAreaView className="flex-1 bg-app">
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
@@ -157,10 +157,10 @@ export default function LoginScreen() {
           <Pressable onPress={Keyboard.dismiss}>
             <Animated.View entering={FadeInDown.duration(500)} className="mb-10 items-center">
               <Image source={require('../../assets/images/icon.png')} style={{ width: 64, height: 64, borderRadius: 16, marginBottom: 24 }} />
-              <Text className="text-3xl font-bold text-white tracking-tight text-center">
+              <Text className="text-3xl font-bold text-ink tracking-tight text-center">
                 {isLogin ? 'Welcome Back' : 'Create Account'}
               </Text>
-              <Text className="text-stone-400 mt-2 text-sm text-center">
+              <Text className="text-muted mt-2 text-sm text-center">
                 {isLogin ? 'Log in to track your expenses' : 'Sign up to start managing wealth'}
               </Text>
             </Animated.View>
@@ -175,7 +175,7 @@ export default function LoginScreen() {
                 onChangeText={setUsername}
                 autoCapitalize="none"
                 returnKeyType="next"
-                className="bg-stone-900 text-white text-sm px-5 py-4 rounded-2xl border border-stone-800 mb-3"
+                className="bg-surface text-ink text-sm px-5 py-4 rounded-2xl border border-line mb-3"
               />
             )}
             <TextInput
@@ -186,9 +186,9 @@ export default function LoginScreen() {
               autoCapitalize="none"
               keyboardType="email-address"
               returnKeyType="next"
-              className="bg-stone-900 text-white text-sm px-5 py-4 rounded-2xl border border-stone-800 mb-3"
+              className="bg-surface text-ink text-sm px-5 py-4 rounded-2xl border border-line mb-3"
             />
-            <View className="flex-row items-center bg-stone-900 rounded-2xl border border-stone-800">
+            <View className="flex-row items-center bg-surface rounded-2xl border border-line">
               <TextInput
                 placeholder="Password"
                 placeholderTextColor="#78716c"
@@ -197,7 +197,7 @@ export default function LoginScreen() {
                 secureTextEntry={passwordHidden}
                 returnKeyType="done"
                 onSubmitEditing={handleAuth}
-                className="flex-1 text-white text-sm px-5 py-4"
+                className="flex-1 text-ink text-sm px-5 py-4"
               />
               <TouchableOpacity onPress={() => setPasswordHidden(h => !h)} className="px-4 py-4">
                 <FontAwesome name={passwordHidden ? 'eye' : 'eye-slash'} size={16} color="#78716c" />
@@ -210,7 +210,7 @@ export default function LoginScreen() {
               onPress={() => { setForgotEmail(email); setShowForgotModal(true); }}
               className="self-end mb-4 active:opacity-70"
             >
-              <Text className="text-stone-400 text-xs font-semibold">Forgot password?</Text>
+              <Text className="text-muted text-xs font-semibold">Forgot password?</Text>
             </TouchableOpacity>
           )}
 
@@ -229,7 +229,7 @@ export default function LoginScreen() {
           </TouchableOpacity>
 
           <TouchableOpacity onPress={() => setIsLogin(!isLogin)} className="items-center py-2 active:opacity-70">
-            <Text className="text-stone-400 text-sm">
+            <Text className="text-muted text-sm">
               {isLogin ? "Don't have an account? " : 'Already have an account? '}
               <Text className="text-emerald-400 font-semibold">{isLogin ? 'Sign Up' : 'Sign In'}</Text>
             </Text>
@@ -245,7 +245,7 @@ export default function LoginScreen() {
         onRequestClose={() => { setShowForgotModal(false); resetForgotModal(); }}
       >
         <Pressable onPress={() => { setShowForgotModal(false); resetForgotModal(); }} style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.85)' }}>
-          <Pressable onPress={() => {}} className="bg-stone-900 rounded-t-3xl border-t border-stone-800" style={{ maxHeight: '75%' }}>
+          <Pressable onPress={() => {}} className="bg-surface rounded-t-3xl border-t border-line" style={{ maxHeight: '75%' }}>
             <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
               <ScrollView
                 bounces={false}
@@ -255,7 +255,7 @@ export default function LoginScreen() {
               >
             {/* Drag handle */}
             <TouchableOpacity onPress={() => { setShowForgotModal(false); resetForgotModal(); }} activeOpacity={0.6} className="self-center mb-6 py-2 px-8">
-              <View className="w-12 h-1.5 bg-stone-700 rounded-full" />
+              <View className="w-12 h-1.5 bg-faint rounded-full" />
             </TouchableOpacity>
 
             {/* Header */}
@@ -263,10 +263,10 @@ export default function LoginScreen() {
               <View className="w-14 h-14 bg-emerald-500/10 rounded-2xl items-center justify-center mb-4 border border-emerald-500/20">
                 <FontAwesome name={forgotStep === 'otp' ? 'envelope-o' : 'lock'} size={20} color="#34d399" />
               </View>
-              <Text className="text-xl font-bold text-white tracking-tight text-center">
+              <Text className="text-xl font-bold text-ink tracking-tight text-center">
                 {forgotStep === 'email' ? 'Forgot Password' : 'Enter Code'}
               </Text>
-              <Text className="text-stone-400 text-sm text-center mt-1.5">
+              <Text className="text-muted text-sm text-center mt-1.5">
                 {forgotStep === 'email'
                   ? "Enter your email — we'll send a one-time code."
                   : `6-digit code sent to ${forgotEmail}`}
@@ -286,14 +286,14 @@ export default function LoginScreen() {
                   autoFocus
                   onSubmitEditing={handleSendOtp}
                   returnKeyType="send"
-                  className="bg-black text-white text-sm px-4 py-3.5 rounded-2xl border border-stone-800 mb-5"
+                  className="bg-app text-ink text-sm px-4 py-3.5 rounded-2xl border border-line mb-5"
                 />
                 <View className="flex-row gap-3">
                   <TouchableOpacity
                     onPress={() => { setShowForgotModal(false); resetForgotModal(); }}
-                    className="flex-1 py-4 rounded-2xl bg-stone-800 items-center active:opacity-70"
+                    className="flex-1 py-4 rounded-2xl bg-elevated items-center active:opacity-70"
                   >
-                    <Text className="text-white text-sm font-semibold uppercase tracking-wider">Cancel</Text>
+                    <Text className="text-ink text-sm font-semibold uppercase tracking-wider">Cancel</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     onPress={handleSendOtp}
@@ -321,11 +321,11 @@ export default function LoginScreen() {
                           forgotOtp[i]
                             ? 'border-emerald-500 bg-emerald-500/10'
                             : i === forgotOtp.length
-                            ? 'border-emerald-500/60 bg-stone-800'
-                            : 'border-stone-700 bg-black'
+                            ? 'border-emerald-500/60 bg-elevated'
+                            : 'border-line bg-app'
                         }`}
                       >
-                        <Text className="text-white text-xl font-bold">{forgotOtp[i] || ''}</Text>
+                        <Text className="text-ink text-xl font-bold">{forgotOtp[i] || ''}</Text>
                       </View>
                     ))}
                   </View>
@@ -344,7 +344,7 @@ export default function LoginScreen() {
                   onPress={() => { setForgotOtp(''); handleSendOtp(); }}
                   className="items-center mb-5 py-2 active:opacity-70"
                 >
-                  <Text className="text-stone-500 text-xs">
+                  <Text className="text-muted text-xs">
                     Didn't receive it?{' '}
                     <Text className="text-emerald-400 font-semibold">Resend</Text>
                   </Text>
@@ -353,9 +353,9 @@ export default function LoginScreen() {
                 <View className="flex-row gap-3">
                   <TouchableOpacity
                     onPress={() => { setForgotStep('email'); setForgotOtp(''); }}
-                    className="flex-1 py-4 rounded-2xl bg-stone-800 items-center active:opacity-70"
+                    className="flex-1 py-4 rounded-2xl bg-elevated items-center active:opacity-70"
                   >
-                    <Text className="text-white text-sm font-semibold uppercase tracking-wider">Back</Text>
+                    <Text className="text-ink text-sm font-semibold uppercase tracking-wider">Back</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     onPress={handleVerifyOtp}

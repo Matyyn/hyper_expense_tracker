@@ -383,8 +383,13 @@ export function useExpenseSync(userId: string | undefined, budgetFallback = 0, g
 
   const deleteTemplateMutation = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase.from('quick_templates').delete().eq('id', id);
+      // Select the deleted rows back so we can detect an RLS-blocked delete, which
+      // returns no error but removes 0 rows (causing the template to reappear).
+      const { data, error } = await supabase.from('quick_templates').delete().eq('id', id).select('id');
       if (error) throw error;
+      if (!data || data.length === 0) {
+        throw new Error('Could not delete template. Run the latest database migration (quick_templates delete policy).');
+      }
     },
     onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: ['quick_templates', userId] });
@@ -462,6 +467,7 @@ export function useExpenseSync(userId: string | undefined, budgetFallback = 0, g
     updateTemplate: updateTemplateMutation.mutate,
     addTemplate: addTemplateMutation.mutate,
     deleteTemplate: deleteTemplateMutation.mutate,
+    deleteTemplateAsync: deleteTemplateMutation.mutateAsync,
     isAdding: addExpenseMutation.isPending,
     isDeleting: deleteExpenseMutation.isPending,
   };

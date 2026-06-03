@@ -13,10 +13,10 @@ function SectionTitle({ icon, label, color = '#34d399', right }: { icon: React.C
   return (
     <View className="flex-row items-center justify-between mb-4">
       <View className="flex-row items-center">
-        <View className="w-7 h-7 rounded-lg bg-black border border-stone-800 items-center justify-center mr-3">
+        <View className="w-7 h-7 rounded-lg bg-app border border-line items-center justify-center mr-3">
           <FontAwesome name={icon} size={12} color={color} />
         </View>
-        <Text className="text-white text-base font-bold tracking-tight">{label}</Text>
+        <Text className="text-ink text-base font-bold tracking-tight">{label}</Text>
       </View>
       {right}
     </View>
@@ -151,7 +151,7 @@ export default function AnalyticsScreen() {
   const spendCategories = categories.filter(c => c.name !== INCOME_CATEGORY);
 
   return (
-    <SafeAreaView className="flex-1 bg-black">
+    <SafeAreaView className="flex-1 bg-app">
       <ScrollView
         className="px-6"
         contentContainerStyle={{ paddingBottom: 32 }}
@@ -159,32 +159,32 @@ export default function AnalyticsScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#34d399" />}
       >
         <View className="mb-6 mt-1">
-          <Text className="text-3xl font-bold text-white tracking-tight">Analytics</Text>
+          <Text className="text-3xl font-bold text-ink tracking-tight">Analytics</Text>
           <Text className="text-rose-400 mt-1 text-[11px] font-semibold tracking-widest uppercase">Spending Insights</Text>
         </View>
 
         <View className="flex-row mb-5 -mx-1">
-          <View className="flex-1 mx-1 bg-stone-900 border border-stone-800 rounded-3xl p-4">
+          <View className="flex-1 mx-1 bg-surface border border-line rounded-3xl p-4">
             <View className="flex-row items-center mb-2">
               <View className="w-6 h-6 rounded-md bg-rose-500/10 items-center justify-center mr-2">
                 <FontAwesome name="dollar" size={10} color="#f43f5e" />
               </View>
-              <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest">Total</Text>
+              <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">Total</Text>
             </View>
             <Text className="text-rose-400 text-lg font-bold tracking-tight">{format(displayTotalMonthly)}</Text>
           </View>
-          <View className="flex-1 mx-1 bg-stone-900 border border-stone-800 rounded-3xl p-4">
+          <View className="flex-1 mx-1 bg-surface border border-line rounded-3xl p-4">
             <View className="flex-row items-center mb-2">
               <View className="w-6 h-6 rounded-md bg-amber-500/10 items-center justify-center mr-2">
                 <FontAwesome name="calendar-o" size={10} color="#fbbf24" />
               </View>
-              <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest">Daily Avg</Text>
+              <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">Daily Avg</Text>
             </View>
             <Text className="text-amber-400 text-lg font-bold tracking-tight">{format(dailyAvg)}</Text>
           </View>
         </View>
 
-        <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-5">
+        <View className="bg-surface border border-line rounded-3xl p-5 mb-5">
           <SectionTitle
             icon="pie-chart"
             label="Category Breakdown"
@@ -204,8 +204,8 @@ export default function AnalyticsScreen() {
               <View className="w-14 h-14 bg-stone-800/50 rounded-2xl items-center justify-center mb-3">
                 <FontAwesome name="bar-chart" size={20} color="#52525b" />
               </View>
-              <Text className="text-stone-400 text-sm font-semibold text-center">No data yet</Text>
-              <Text className="text-stone-600 text-[11px] text-center mt-1.5 uppercase tracking-widest">Log expenses to see charts</Text>
+              <Text className="text-muted text-sm font-semibold text-center">No data yet</Text>
+              <Text className="text-faint text-[11px] text-center mt-1.5 uppercase tracking-widest">Log expenses to see charts</Text>
             </View>
           ) : (
             categoriesList.map((cat, idx) => {
@@ -216,23 +216,23 @@ export default function AnalyticsScreen() {
                   <View className="flex-row justify-between items-center mb-2">
                     <View className="flex-row items-center">
                       <Text className="text-base mr-2">{cat.icon}</Text>
-                      <Text className="text-stone-300 text-sm font-semibold">{cat.name}</Text>
+                      <Text className="text-ink text-sm font-semibold">{cat.name}</Text>
                       {overLimit && (
                         <View className="ml-2 bg-rose-500/15 px-1.5 py-0.5 rounded-full">
                           <Text className="text-rose-400 text-[9px] font-bold uppercase">Over</Text>
                         </View>
                       )}
                     </View>
-                    <Text className={`text-sm font-bold ${overLimit ? 'text-rose-400' : 'text-stone-200'}`}>{format(cat.amount)}</Text>
+                    <Text className={`text-sm font-bold ${overLimit ? 'text-rose-400' : 'text-ink'}`}>{format(cat.amount)}</Text>
                   </View>
                   <View className="flex-row items-center">
-                    <View className="flex-1 h-1.5 bg-black rounded-full overflow-hidden mr-3">
+                    <View className="flex-1 h-1.5 bg-app rounded-full overflow-hidden mr-3">
                       <View className="h-full rounded-full" style={{ width: `${pctOfLimit ?? cat.percentage}%`, backgroundColor: overLimit ? '#f43f5e' : cat.color }} />
                     </View>
                     {cat.limit ? (
-                      <Text className="text-stone-500 text-[10px] font-semibold w-20 text-right">{Math.round(pctOfLimit!)}% of {cat.limit >= 100 ? `${(cat.limit / 1000).toFixed(1)}k` : cat.limit}</Text>
+                      <Text className="text-muted text-[10px] font-semibold w-20 text-right">{Math.round(pctOfLimit!)}% of {cat.limit >= 100 ? `${(cat.limit / 1000).toFixed(1)}k` : cat.limit}</Text>
                     ) : (
-                      <Text className="text-stone-500 text-xs font-semibold w-10 text-right">{Math.round(cat.percentage)}%</Text>
+                      <Text className="text-muted text-xs font-semibold w-10 text-right">{Math.round(cat.percentage)}%</Text>
                     )}
                   </View>
                 </View>
@@ -242,46 +242,46 @@ export default function AnalyticsScreen() {
         </View>
 
         {sourceList.length > 0 && (
-          <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-5">
+          <View className="bg-surface border border-line rounded-3xl p-5 mb-5">
             <SectionTitle icon="credit-card" label="By Source" color="#818cf8" />
             {sourceList.map((src, idx) => (
               <View key={src.name} className={idx === sourceList.length - 1 ? '' : 'mb-4'}>
                 <View className="flex-row justify-between items-center mb-2">
-                  <Text className="text-stone-300 text-sm font-semibold">{src.name}</Text>
-                  <Text className="text-stone-200 text-sm font-bold">{format(src.amount)}</Text>
+                  <Text className="text-ink text-sm font-semibold">{src.name}</Text>
+                  <Text className="text-ink text-sm font-bold">{format(src.amount)}</Text>
                 </View>
                 <View className="flex-row items-center">
-                  <View className="flex-1 h-1.5 bg-black rounded-full overflow-hidden mr-3">
+                  <View className="flex-1 h-1.5 bg-app rounded-full overflow-hidden mr-3">
                     <View
                       className="h-full rounded-full"
                       style={{ width: `${src.percentage}%`, backgroundColor: SOURCE_COLORS[idx % SOURCE_COLORS.length] }}
                     />
                   </View>
-                  <Text className="text-stone-500 text-xs font-semibold w-10 text-right">{Math.round(src.percentage)}%</Text>
+                  <Text className="text-muted text-xs font-semibold w-10 text-right">{Math.round(src.percentage)}%</Text>
                 </View>
               </View>
             ))}
           </View>
         )}
 
-        <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-5">
+        <View className="bg-surface border border-line rounded-3xl p-5 mb-5">
           <View className="flex-row items-center justify-between mb-4">
             <View className="flex-row items-center">
-              <View className="w-7 h-7 rounded-lg bg-black border border-stone-800 items-center justify-center mr-3">
+              <View className="w-7 h-7 rounded-lg bg-app border border-line items-center justify-center mr-3">
                 <FontAwesome name="line-chart" size={12} color="#f43f5e" />
               </View>
-              <Text className="text-white text-base font-bold tracking-tight">
+              <Text className="text-ink text-base font-bold tracking-tight">
                 {weekChartView === 'weekly' ? "This Week" : "Monthly Weeks"}
               </Text>
             </View>
-            <View className="flex-row bg-black rounded-full p-1 border border-stone-800">
+            <View className="flex-row bg-app rounded-full p-1 border border-line">
               {(['weekly', 'monthly'] as const).map(v => (
                 <TouchableOpacity
                   key={v}
                   onPress={() => setWeekChartView(v)}
                   className={`px-3 py-1.5 rounded-full ${weekChartView === v ? 'bg-rose-500' : ''}`}
                 >
-                  <Text className={`text-[11px] font-semibold uppercase tracking-wider ${weekChartView === v ? 'text-white' : 'text-stone-500'}`}>
+                  <Text className={`text-[11px] font-semibold uppercase tracking-wider ${weekChartView === v ? 'text-white' : 'text-muted'}`}>
                     {v === 'weekly' ? 'Week' : 'Month'}
                   </Text>
                 </TouchableOpacity>
@@ -297,7 +297,7 @@ export default function AnalyticsScreen() {
                   const isCurrent = idx === today.getDay();
                   return (
                     <View key={idx} className="items-center flex-1" style={{ height: '100%' }}>
-                      <Text className="text-stone-500 text-[10px] font-semibold mb-1.5" style={{ minHeight: 14 }} numberOfLines={1}>
+                      <Text className="text-muted text-[10px] font-semibold mb-1.5" style={{ minHeight: 14 }} numberOfLines={1}>
                         {amount > 0 ? (amount >= 100 ? `${(amount / 1000).toFixed(1)}k` : Math.round(amount)) : ''}
                       </Text>
                       <View className="flex-1 w-7 bg-stone-800/60 rounded-t-xl overflow-hidden justify-end">
@@ -309,7 +309,7 @@ export default function AnalyticsScreen() {
               </View>
               <View className="flex-row justify-between mt-3">
                 {days.map((d, idx) => (
-                  <Text key={idx} className={`flex-1 text-center text-[11px] font-semibold ${idx === today.getDay() ? 'text-rose-400' : 'text-stone-500'}`}>{d}</Text>
+                  <Text key={idx} className={`flex-1 text-center text-[11px] font-semibold ${idx === today.getDay() ? 'text-rose-400' : 'text-muted'}`}>{d}</Text>
                 ))}
               </View>
             </View>
@@ -323,10 +323,10 @@ export default function AnalyticsScreen() {
                   const barH = isFuture ? 0 : Math.max((amount / maxWeekAmount) * 100, amount > 0 ? 4 : 0);
                   return (
                     <View key={idx} className="items-center flex-1 mx-1" style={{ height: '100%' }}>
-                      <Text className="text-stone-500 text-[10px] font-semibold mb-1.5" style={{ minHeight: 14 }} numberOfLines={1}>
+                      <Text className="text-muted text-[10px] font-semibold mb-1.5" style={{ minHeight: 14 }} numberOfLines={1}>
                         {!isFuture && amount > 0 ? (amount >= 100 ? `${(amount / 1000).toFixed(1)}k` : Math.round(amount)) : ''}
                       </Text>
-                      <View className={`flex-1 w-full rounded-t-2xl overflow-hidden justify-end ${isFuture ? 'bg-stone-800/20 border border-stone-800' : 'bg-stone-800/50'}`}>
+                      <View className={`flex-1 w-full rounded-t-2xl overflow-hidden justify-end ${isFuture ? 'bg-stone-800/20 border border-line' : 'bg-stone-800/50'}`}>
                         {isFuture ? (
                           <View className="flex-1 items-center justify-center">
                             <FontAwesome name="lock" size={14} color="#292524" />
@@ -345,7 +345,7 @@ export default function AnalyticsScreen() {
                   const isCurrent = weekNum === currentWeekOfMonth;
                   const isFuture = weekNum > currentWeekOfMonth;
                   return (
-                    <Text key={idx} className={`flex-1 text-center text-[11px] font-semibold mx-1 ${isCurrent ? 'text-rose-400' : isFuture ? 'text-stone-700' : 'text-stone-500'}`}>
+                    <Text key={idx} className={`flex-1 text-center text-[11px] font-semibold mx-1 ${isCurrent ? 'text-rose-400' : isFuture ? 'text-faint' : 'text-muted'}`}>
                       Week {weekNum}
                     </Text>
                   );
@@ -355,18 +355,18 @@ export default function AnalyticsScreen() {
           )}
         </View>
 
-        <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-5">
+        <View className="bg-surface border border-line rounded-3xl p-5 mb-5">
           <SectionTitle icon="tachometer" label="Budget Utilization" color="#f43f5e" />
           <View className="flex-row justify-between items-baseline mb-3">
-            <Text className="text-4xl font-bold text-white tracking-tight">{Math.round(budgetUsedPct)}%</Text>
-            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest">Used</Text>
+            <Text className="text-4xl font-bold text-ink tracking-tight">{Math.round(budgetUsedPct)}%</Text>
+            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">Used</Text>
           </View>
-          <View className="h-2.5 bg-black rounded-full overflow-hidden mb-3">
+          <View className="h-2.5 bg-app rounded-full overflow-hidden mb-3">
             <View className={`h-full rounded-full ${budgetUsedPct >= 90 ? 'bg-rose-500' : budgetUsedPct >= 70 ? 'bg-amber-500' : 'bg-emerald-500'}`} style={{ width: `${budgetUsedPct}%` }} />
           </View>
           <View className="flex-row justify-between">
-            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest">Spent {format(displayTotalMonthly)}</Text>
-            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest">of {format(monthlyBudget)}</Text>
+            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">Spent {format(displayTotalMonthly)}</Text>
+            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">of {format(monthlyBudget)}</Text>
           </View>
         </View>
       </ScrollView>
@@ -374,36 +374,36 @@ export default function AnalyticsScreen() {
       {/* Category Budgets Modal */}
       <Modal visible={showBudgetsModal} animationType="slide" transparent={true} onRequestClose={() => setShowBudgetsModal(false)}>
         <Pressable onPress={() => setShowBudgetsModal(false)} style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.8)' }}>
-          <Pressable onPress={() => {}} className="bg-stone-900 rounded-t-3xl border-t border-stone-800" style={{ maxHeight: '75%' }}>
+          <Pressable onPress={() => {}} className="bg-surface rounded-t-3xl border-t border-line" style={{ maxHeight: '75%' }}>
             <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
               <ScrollView bounces={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 24 }} showsVerticalScrollIndicator={false}>
             <TouchableOpacity onPress={() => setShowBudgetsModal(false)} activeOpacity={0.6} className="self-center mb-6 py-2 px-8">
-              <View className="w-12 h-1.5 bg-stone-700 rounded-full" />
+              <View className="w-12 h-1.5 bg-faint rounded-full" />
             </TouchableOpacity>
-            <Text className="text-xl font-bold text-white tracking-tight mb-1">Category Budgets</Text>
-            <Text className="text-stone-400 text-sm mb-5">Set monthly limits per category. We'll alert you at 80% and 100%.</Text>
+            <Text className="text-xl font-bold text-ink tracking-tight mb-1">Category Budgets</Text>
+            <Text className="text-muted text-sm mb-5">Set monthly limits per category. We'll alert you at 80% and 100%.</Text>
 
             {spendCategories.map(cat => (
-              <View key={cat.id} className="bg-black/40 rounded-2xl border border-stone-800 px-4 py-3 mb-2 flex-row items-center">
+              <View key={cat.id} className="bg-black/40 rounded-2xl border border-line px-4 py-3 mb-2 flex-row items-center">
                 <Text className="text-xl mr-2">{cat.icon}</Text>
-                <Text className="text-stone-300 text-sm font-semibold flex-1">{cat.name}</Text>
-                <View className="flex-row items-center bg-stone-900 rounded-xl px-3 py-2 border border-stone-800" style={{ minWidth: 140 }}>
-                  <Text className="text-stone-500 text-xs font-semibold mr-2">{symbol}</Text>
+                <Text className="text-ink text-sm font-semibold flex-1">{cat.name}</Text>
+                <View className="flex-row items-center bg-surface rounded-xl px-3 py-2 border border-line" style={{ minWidth: 140 }}>
+                  <Text className="text-muted text-xs font-semibold mr-2">{symbol}</Text>
                   <TextInput
                     value={budgetDrafts[cat.name] || ''}
                     onChangeText={v => setBudgetDrafts(prev => ({ ...prev, [cat.name]: v }))}
                     placeholder="No limit"
                     placeholderTextColor="#52525b"
                     keyboardType="numeric"
-                    className="text-white text-sm font-bold flex-1"
+                    className="text-ink text-sm font-bold flex-1"
                   />
                 </View>
               </View>
             ))}
 
             <View className="flex-row gap-3 mt-4">
-              <TouchableOpacity onPress={() => setShowBudgetsModal(false)} className="flex-1 py-4 rounded-2xl bg-stone-800 items-center">
-                <Text className="text-white text-sm font-semibold uppercase tracking-wider">Cancel</Text>
+              <TouchableOpacity onPress={() => setShowBudgetsModal(false)} className="flex-1 py-4 rounded-2xl bg-elevated items-center">
+                <Text className="text-ink text-sm font-semibold uppercase tracking-wider">Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity onPress={handleSaveBudgets} disabled={savingBudgets} className="flex-1 py-4 rounded-2xl bg-emerald-600 items-center">
                 {savingBudgets ? <ActivityIndicator color="white" /> : <Text className="text-white text-sm font-bold uppercase tracking-wider">Save</Text>}

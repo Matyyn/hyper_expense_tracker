@@ -19,6 +19,7 @@ import { useRouter } from "expo-router";
 import { useAuth } from "../../components/AuthProvider";
 import { useCurrency } from "../../components/CurrencyProvider";
 import { useNotification } from "../../components/NotificationProvider";
+import { useTheme } from "../../components/ThemeProvider";
 import { INCOME_CATEGORY, useExpenseSync } from "../../hooks/useExpenseSync";
 import { useLoans } from "../../hooks/useLoans";
 import { supabase } from "../../lib/supabase";
@@ -64,6 +65,7 @@ export default function HistoryScreen() {
   const { loans } = useLoans(user?.id);
   const { showNotification } = useNotification();
   const { format } = useCurrency();
+  const { colors } = useTheme();
   const router = useRouter();
 
   // Month navigation state
@@ -298,7 +300,7 @@ export default function HistoryScreen() {
   };
 
   return (
-    <SafeAreaView className="flex-1 bg-black">
+    <SafeAreaView className="flex-1 bg-app">
       <ScrollView
         className="px-6"
         contentContainerStyle={{ paddingBottom: 32 }}
@@ -313,30 +315,30 @@ export default function HistoryScreen() {
       >
         {/* Title */}
         <View className="flex-row items-center justify-between mb-2 mt-1">
-          <Text className="text-3xl font-bold text-white tracking-tight">History</Text>
+          <Text className="text-3xl font-bold text-ink tracking-tight">History</Text>
           <TouchableOpacity
             onPress={() => showNotification("Tap expense to edit · Long-press to delete", "info")}
-            className="w-9 h-9 rounded-full bg-stone-900 border border-stone-800 items-center justify-center active:bg-stone-800"
+            className="w-9 h-9 rounded-full bg-surface border border-line items-center justify-center active:bg-elevated"
           >
             <FontAwesome name="info" size={13} color="#78716c" />
           </TouchableOpacity>
         </View>
 
         {/* Month Navigation */}
-        <View className="flex-row items-center justify-between mb-4 bg-stone-900 border border-stone-800 rounded-2xl px-3 py-2 self-center" style={{ minWidth: 200 }}>
+        <View className="flex-row items-center justify-between mb-4 bg-surface border border-line rounded-2xl px-3 py-2 self-center" style={{ minWidth: 200 }}>
           <TouchableOpacity
             onPress={() => navigateMonth(-1)}
-            className="w-9 h-9 items-center justify-center rounded-xl bg-black/40 border border-stone-800 active:bg-stone-800"
+            className="w-9 h-9 items-center justify-center rounded-xl bg-black/40 border border-line active:bg-elevated"
           >
             <FontAwesome name="chevron-left" size={12} color="#a8a29e" />
           </TouchableOpacity>
-          <Text className="text-white text-sm font-bold tracking-tight flex-1 text-center">
+          <Text className="text-ink text-sm font-bold tracking-tight flex-1 text-center">
             {monthNames[viewMonth]} {viewYear}
           </Text>
           <TouchableOpacity
             onPress={() => navigateMonth(1)}
             disabled={isCurrentMonth}
-            className={`w-9 h-9 items-center justify-center rounded-xl border ${isCurrentMonth ? "bg-black/20 border-stone-800/40" : "bg-black/40 border-stone-800 active:bg-stone-800"}`}
+            className={`w-9 h-9 items-center justify-center rounded-xl border ${isCurrentMonth ? "bg-black/20 border-stone-800/40" : "bg-black/40 border-line active:bg-elevated"}`}
           >
             <FontAwesome
               name="chevron-right"
@@ -347,14 +349,14 @@ export default function HistoryScreen() {
         </View>
 
         {/* Search bar — record count in placeholder */}
-        <View className="flex-row items-center bg-stone-900 border border-stone-800 rounded-2xl px-4 py-1 mb-2">
+        <View className="flex-row items-center bg-surface border border-line rounded-2xl px-4 py-1 mb-2">
           <FontAwesome name="search" size={13} color="#52525b" />
           <TextInput
             placeholder={`Search ${mergedItems.length} record${mergedItems.length !== 1 ? "s" : ""}...`}
             placeholderTextColor="#78716c"
             value={search}
             onChangeText={setSearch}
-            className="flex-1 text-white text-sm px-3 py-2.5"
+            className="flex-1 text-ink text-sm px-3 py-2.5"
           />
           {search.length > 0 && (
             <TouchableOpacity onPress={() => setSearch("")} className="w-8 h-8 items-center justify-center">
@@ -369,9 +371,9 @@ export default function HistoryScreen() {
             {/* Sort */}
             <TouchableOpacity
               onPress={() => setOpenDropdown(openDropdown === 'sort' ? null : 'sort')}
-              className={`flex-1 flex-row items-center justify-between px-3 py-2.5 rounded-2xl border ${openDropdown === 'sort' ? "bg-emerald-900/30 border-emerald-700" : "bg-stone-900 border-stone-800"}`}
+              className={`flex-1 flex-row items-center justify-between px-3 py-2.5 rounded-2xl border ${openDropdown === 'sort' ? "bg-emerald-900/30 border-emerald-700" : "bg-surface border-line"}`}
             >
-              <Text className={`text-[11px] font-semibold uppercase tracking-wide flex-1 ${openDropdown === 'sort' ? "text-emerald-400" : "text-stone-300"}`} numberOfLines={1}>
+              <Text className={`text-[11px] font-semibold uppercase tracking-wide flex-1 ${openDropdown === 'sort' ? "text-emerald-400" : "text-ink"}`} numberOfLines={1}>
                 {sortOptions.find(o => o.key === sortMode)?.label}
               </Text>
               <FontAwesome name={openDropdown === 'sort' ? "chevron-up" : "chevron-down"} size={9} color={openDropdown === 'sort' ? "#34d399" : "#57534e"} />
@@ -380,9 +382,9 @@ export default function HistoryScreen() {
             {/* Category */}
             <TouchableOpacity
               onPress={() => setOpenDropdown(openDropdown === 'category' ? null : 'category')}
-              className={`flex-1 flex-row items-center justify-between px-3 py-2.5 rounded-2xl border ${openDropdown === 'category' || filterCat !== "All" ? "bg-emerald-900/30 border-emerald-700" : "bg-stone-900 border-stone-800"}`}
+              className={`flex-1 flex-row items-center justify-between px-3 py-2.5 rounded-2xl border ${openDropdown === 'category' || filterCat !== "All" ? "bg-emerald-900/30 border-emerald-700" : "bg-surface border-line"}`}
             >
-              <Text className={`text-[11px] font-semibold uppercase tracking-wide flex-1 ${openDropdown === 'category' || filterCat !== "All" ? "text-emerald-400" : "text-stone-300"}`} numberOfLines={1}>
+              <Text className={`text-[11px] font-semibold uppercase tracking-wide flex-1 ${openDropdown === 'category' || filterCat !== "All" ? "text-emerald-400" : "text-ink"}`} numberOfLines={1}>
                 {filterCat === "All" ? "Category" : filterCat}
               </Text>
               <FontAwesome name={openDropdown === 'category' ? "chevron-up" : "chevron-down"} size={9} color={openDropdown === 'category' || filterCat !== "All" ? "#34d399" : "#57534e"} />
@@ -391,9 +393,9 @@ export default function HistoryScreen() {
             {/* Source */}
             <TouchableOpacity
               onPress={() => setOpenDropdown(openDropdown === 'source' ? null : 'source')}
-              className={`flex-1 flex-row items-center justify-between px-3 py-2.5 rounded-2xl border ${openDropdown === 'source' || filterSource !== "All" ? "bg-emerald-900/30 border-emerald-700" : "bg-stone-900 border-stone-800"}`}
+              className={`flex-1 flex-row items-center justify-between px-3 py-2.5 rounded-2xl border ${openDropdown === 'source' || filterSource !== "All" ? "bg-emerald-900/30 border-emerald-700" : "bg-surface border-line"}`}
             >
-              <Text className={`text-[11px] font-semibold uppercase tracking-wide flex-1 ${openDropdown === 'source' || filterSource !== "All" ? "text-emerald-400" : "text-stone-300"}`} numberOfLines={1}>
+              <Text className={`text-[11px] font-semibold uppercase tracking-wide flex-1 ${openDropdown === 'source' || filterSource !== "All" ? "text-emerald-400" : "text-ink"}`} numberOfLines={1}>
                 {filterSource === "All" ? "Source" : filterSource}
               </Text>
               <FontAwesome name={openDropdown === 'source' ? "chevron-up" : "chevron-down"} size={9} color={openDropdown === 'source' || filterSource !== "All" ? "#34d399" : "#57534e"} />
@@ -407,9 +409,9 @@ export default function HistoryScreen() {
                 <TouchableOpacity
                   key={opt.key}
                   onPress={() => { setSortMode(opt.key); setOpenDropdown(null); }}
-                  className={`px-3.5 py-2 mr-2 rounded-full border ${sortMode === opt.key ? "bg-emerald-600 border-emerald-500" : "bg-stone-900 border-stone-800"}`}
+                  className={`px-3.5 py-2 mr-2 rounded-full border ${sortMode === opt.key ? "bg-emerald-600 border-emerald-500" : "bg-surface border-line"}`}
                 >
-                  <Text className={`text-xs font-semibold uppercase tracking-wide ${sortMode === opt.key ? "text-white" : "text-stone-400"}`}>
+                  <Text className={`text-xs font-semibold uppercase tracking-wide ${sortMode === opt.key ? "text-white" : "text-muted"}`}>
                     {opt.label}
                   </Text>
                 </TouchableOpacity>
@@ -423,12 +425,12 @@ export default function HistoryScreen() {
                 <TouchableOpacity
                   key={cat}
                   onPress={() => { setFilterCat(cat); setOpenDropdown(null); }}
-                  className={`px-3.5 py-2 mr-2 rounded-full border flex-row items-center ${filterCat === cat ? "bg-emerald-600 border-emerald-500" : "bg-stone-900 border-stone-800"}`}
+                  className={`px-3.5 py-2 mr-2 rounded-full border flex-row items-center ${filterCat === cat ? "bg-emerald-600 border-emerald-500" : "bg-surface border-line"}`}
                 >
                   {cat !== "All" && categoryMap[cat] && (
                     <Text className="mr-1.5 text-sm">{categoryMap[cat].icon}</Text>
                   )}
-                  <Text className={`text-xs font-semibold uppercase tracking-wide ${filterCat === cat ? "text-white" : "text-stone-400"}`}>
+                  <Text className={`text-xs font-semibold uppercase tracking-wide ${filterCat === cat ? "text-white" : "text-muted"}`}>
                     {cat}
                   </Text>
                 </TouchableOpacity>
@@ -442,9 +444,9 @@ export default function HistoryScreen() {
                 <TouchableOpacity
                   key={src}
                   onPress={() => { setFilterSource(src); setOpenDropdown(null); }}
-                  className={`px-3.5 py-2 mr-2 rounded-full border ${filterSource === src ? "bg-emerald-600 border-emerald-500" : "bg-stone-900 border-stone-800"}`}
+                  className={`px-3.5 py-2 mr-2 rounded-full border ${filterSource === src ? "bg-emerald-600 border-emerald-500" : "bg-surface border-line"}`}
                 >
-                  <Text className={`text-xs font-semibold uppercase tracking-wide ${filterSource === src ? "text-white" : "text-stone-400"}`}>
+                  <Text className={`text-xs font-semibold uppercase tracking-wide ${filterSource === src ? "text-white" : "text-muted"}`}>
                     {src}
                   </Text>
                 </TouchableOpacity>
@@ -459,14 +461,14 @@ export default function HistoryScreen() {
             <ActivityIndicator color="#34d399" />
           </View>
         ) : sorted.length === 0 ? (
-          <View className="bg-stone-900 border border-stone-800 rounded-3xl p-8 items-center mt-6">
+          <View className="bg-surface border border-line rounded-3xl p-8 items-center mt-6">
             <View className="w-14 h-14 bg-stone-800/50 rounded-2xl items-center justify-center mb-3">
               <FontAwesome name="inbox" size={20} color="#52525b" />
             </View>
-            <Text className="text-stone-400 text-sm font-semibold text-center">
+            <Text className="text-muted text-sm font-semibold text-center">
               No records found
             </Text>
-            <Text className="text-stone-600 text-[11px] text-center mt-1.5 uppercase tracking-widest">
+            <Text className="text-faint text-[11px] text-center mt-1.5 uppercase tracking-widest">
               Try changing your filters
             </Text>
           </View>
@@ -474,10 +476,10 @@ export default function HistoryScreen() {
           Object.entries(grouped).map(([date, items]) => (
             <View key={date} className="mb-5">
               <View className="flex-row justify-between items-center mb-2.5">
-                <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest">
+                <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">
                   {date}
                 </Text>
-                <Text className="text-stone-600 text-xs font-semibold">
+                <Text className="text-faint text-xs font-semibold">
                   {format(items.reduce((s, e) => s + Number(e.amount), 0))}
                 </Text>
               </View>
@@ -499,10 +501,10 @@ export default function HistoryScreen() {
                           <FontAwesome name="handshake-o" size={13} color={isLent ? "#34d399" : "#f43f5e"} />
                         </View>
                         <View className="flex-1">
-                          <Text className="text-white text-sm font-semibold" numberOfLines={1}>
+                          <Text className="text-ink text-sm font-semibold" numberOfLines={1}>
                             {isLent ? `Lent ${format(loan.principal)} to ${loan.person}` : `Borrowed ${format(loan.principal)} from ${loan.person}`}
                           </Text>
-                          <Text className="text-stone-500 text-[11px] uppercase tracking-wider mt-0.5">
+                          <Text className="text-muted text-[11px] uppercase tracking-wider mt-0.5">
                             {dueDate ? `Due ${dueDate.toLocaleDateString([], { month: 'short', day: 'numeric' })}` : 'No due date'}{loan.source ? ` · ${loan.source}` : ''}
                           </Text>
                         </View>
@@ -518,23 +520,23 @@ export default function HistoryScreen() {
                     onPress={() => openEdit(exp)}
                     onLongPress={() => requestDelete(exp.id)}
                     delayLongPress={500}
-                    className={`flex-row justify-between items-center px-4 py-3 rounded-2xl mb-2 border active:bg-stone-800 ${isIncome ? "bg-emerald-950/40 border-emerald-500/20" : "bg-stone-900/60 border-stone-800"}`}
+                    className={`flex-row justify-between items-center px-4 py-3 rounded-2xl mb-2 border active:bg-elevated ${isIncome ? "bg-emerald-950/40 border-emerald-500/20" : "bg-surface border-line"}`}
                   >
                     <View className="flex-row items-center flex-1">
-                      <View className={`w-10 h-10 rounded-xl items-center justify-center mr-3 ${isIncome ? "bg-emerald-500/10 border border-emerald-500/20" : "bg-stone-800"}`}>
+                      <View className={`w-10 h-10 rounded-xl items-center justify-center mr-3 ${isIncome ? "bg-emerald-500/10 border border-emerald-500/20" : "bg-elevated"}`}>
                         <Text className="text-base">
                           {categoryMap[exp.category]?.icon || (isIncome ? "💰" : "💸")}
                         </Text>
                       </View>
                       <View className="flex-1">
-                        <Text className="text-white text-sm font-semibold" numberOfLines={1}>{exp.description}</Text>
+                        <Text className="text-ink text-sm font-semibold" numberOfLines={1}>{exp.description}</Text>
                         <View className="flex-row items-center flex-wrap mt-0.5" style={{ gap: 4 }}>
-                          <Text className="text-stone-500 text-[11px] uppercase tracking-wider">
+                          <Text className="text-muted text-[11px] uppercase tracking-wider">
                             {exp.category}{exp.is_weekend ? " · Wknd" : ""}
                           </Text>
                           {exp.source ? (
-                            <View className="bg-stone-800 border border-stone-700 rounded-full px-1.5 py-0.5">
-                              <Text className="text-stone-400 text-[9px] font-semibold uppercase tracking-wider">{exp.source}</Text>
+                            <View className="bg-elevated border border-line rounded-full px-1.5 py-0.5">
+                              <Text className="text-muted text-[9px] font-semibold uppercase tracking-wider">{exp.source}</Text>
                             </View>
                           ) : null}
                         </View>
@@ -551,7 +553,7 @@ export default function HistoryScreen() {
         )}
 
         {sorted.length > 0 && (
-          <Text className="text-stone-600 text-[10px] text-center mt-2 uppercase tracking-widest">
+          <Text className="text-faint text-[10px] text-center mt-2 uppercase tracking-widest">
             Tap to edit · Long-press to delete
           </Text>
         )}
@@ -564,26 +566,26 @@ export default function HistoryScreen() {
         animationType="fade"
       >
         <View className="flex-1 justify-center items-center bg-black/80 px-6">
-          <View className="bg-stone-900 rounded-3xl p-6 w-full border border-stone-800">
+          <View className="bg-surface rounded-3xl p-6 w-full border border-line">
             <View className="w-14 h-14 bg-rose-500/10 rounded-2xl items-center justify-center self-center mb-4 border border-rose-500/20">
               <FontAwesome name="trash" size={20} color="#f43f5e" />
             </View>
-            <Text className="text-xl font-bold text-white text-center mb-2 tracking-tight">
+            <Text className="text-xl font-bold text-ink text-center mb-2 tracking-tight">
               Delete Expense?
             </Text>
-            <Text className="text-stone-400 text-sm text-center mb-6">
+            <Text className="text-muted text-sm text-center mb-6">
               This action cannot be undone. The amount will be restored to your
               budget.
             </Text>
             <View className="flex-row gap-3">
               <TouchableOpacity
-                className="flex-1 py-4 rounded-2xl bg-stone-800 items-center active:bg-stone-700"
+                className="flex-1 py-4 rounded-2xl bg-elevated items-center active:bg-faint"
                 onPress={() => {
                   setDeleteModalVisible(false);
                   setItemToDelete(null);
                 }}
               >
-                <Text className="text-white text-sm font-semibold uppercase tracking-wider">
+                <Text className="text-ink text-sm font-semibold uppercase tracking-wider">
                   Cancel
                 </Text>
               </TouchableOpacity>
@@ -607,20 +609,20 @@ export default function HistoryScreen() {
         animationType="slide"
         onRequestClose={() => setEditDraft(null)}
       >
-        <Pressable onPress={() => setEditDraft(null)} style={{ flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.8)" }}>
-          <Pressable onPress={() => {}} style={{ maxHeight: "90%", backgroundColor: "#1c1917", borderTopLeftRadius: 28, borderTopRightRadius: 28, borderTopWidth: 1, borderColor: "#292524" }}>
+        <Pressable onPress={() => setEditDraft(null)} style={{ flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.6)" }}>
+          <Pressable onPress={() => {}} style={{ maxHeight: "90%", backgroundColor: colors.surface, borderTopLeftRadius: 28, borderTopRightRadius: 28, borderTopWidth: 1, borderColor: colors.line }}>
           <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 24, paddingBottom: 40 }}>
             <TouchableOpacity onPress={() => setEditDraft(null)} activeOpacity={0.6} className="self-center mb-6 py-2 px-8">
-              <View className="w-12 h-1.5 bg-stone-700 rounded-full" />
+              <View className="w-12 h-1.5 bg-faint rounded-full" />
             </TouchableOpacity>
-            <Text className="text-xl font-bold text-white tracking-tight mb-1">
+            <Text className="text-xl font-bold text-ink tracking-tight mb-1">
               Edit Expense
             </Text>
-            <Text className="text-stone-400 text-sm mb-5">
+            <Text className="text-muted text-sm mb-5">
               Update the details below
             </Text>
 
-            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
+            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
               Description
             </Text>
             <TextInput
@@ -630,13 +632,13 @@ export default function HistoryScreen() {
               onChangeText={(v) =>
                 setEditDraft((d) => d && { ...d, description: v })
               }
-              className="bg-black text-white text-sm px-4 py-3.5 rounded-2xl border border-stone-800 mb-3"
+              className="bg-app text-ink text-sm px-4 py-3.5 rounded-2xl border border-line mb-3"
             />
 
-            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
+            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
               Amount
             </Text>
-            <View className="flex-row items-center bg-black rounded-2xl px-4 py-3 border border-stone-800 mb-3">
+            <View className="flex-row items-center bg-app rounded-2xl px-4 py-3 border border-line mb-3">
               <TextInput
                 placeholder="0"
                 placeholderTextColor="#78716c"
@@ -645,11 +647,11 @@ export default function HistoryScreen() {
                 onChangeText={(v) =>
                   setEditDraft((d) => d && { ...d, amount: v })
                 }
-                className="flex-1 text-white text-lg font-bold"
+                className="flex-1 text-ink text-lg font-bold"
               />
             </View>
 
-            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
+            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
               Category
             </Text>
             <ScrollView
@@ -663,10 +665,10 @@ export default function HistoryScreen() {
                   onPress={() =>
                     setEditDraft((d) => d && { ...d, category: cat.name })
                   }
-                  className={`px-3.5 py-2 mr-2 rounded-full border ${editDraft?.category === cat.name ? "bg-emerald-600 border-emerald-500" : "bg-black border-stone-800"}`}
+                  className={`px-3.5 py-2 mr-2 rounded-full border ${editDraft?.category === cat.name ? "bg-emerald-600 border-emerald-500" : "bg-app border-line"}`}
                 >
                   <Text
-                    className={`text-xs font-semibold ${editDraft?.category === cat.name ? "text-white" : "text-stone-400"}`}
+                    className={`text-xs font-semibold ${editDraft?.category === cat.name ? "text-white" : "text-muted"}`}
                   >
                     {cat.icon} {cat.name}
                   </Text>
@@ -674,7 +676,7 @@ export default function HistoryScreen() {
               ))}
             </ScrollView>
 
-            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
+            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
               Source
             </Text>
             <ScrollView
@@ -688,10 +690,10 @@ export default function HistoryScreen() {
                   onPress={() =>
                     setEditDraft((d) => d && { ...d, source: d.source === src ? "" : src })
                   }
-                  className={`px-3.5 py-2 mr-2 rounded-full border ${editDraft?.source === src ? "bg-stone-600 border-stone-500" : "bg-black border-stone-800"}`}
+                  className={`px-3.5 py-2 mr-2 rounded-full border ${editDraft?.source === src ? "bg-stone-600 border-stone-500" : "bg-app border-line"}`}
                 >
                   <Text
-                    className={`text-xs font-semibold ${editDraft?.source === src ? "text-white" : "text-stone-400"}`}
+                    className={`text-xs font-semibold ${editDraft?.source === src ? "text-white" : "text-muted"}`}
                   >
                     {src}
                   </Text>
@@ -702,9 +704,9 @@ export default function HistoryScreen() {
             <View className="flex-row gap-3">
               <TouchableOpacity
                 onPress={() => setEditDraft(null)}
-                className="flex-1 py-4 rounded-2xl bg-stone-800 items-center active:bg-stone-700"
+                className="flex-1 py-4 rounded-2xl bg-elevated items-center active:bg-faint"
               >
-                <Text className="text-white text-sm font-semibold uppercase tracking-wider">
+                <Text className="text-ink text-sm font-semibold uppercase tracking-wider">
                   Cancel
                 </Text>
               </TouchableOpacity>

@@ -30,6 +30,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../../components/AuthProvider";
 import { useCurrency } from "../../components/CurrencyProvider";
 import { useNotification } from "../../components/NotificationProvider";
+import { useTheme } from "../../components/ThemeProvider";
 import {
   INCOME_CATEGORY,
   LOAN_RETURN_CATEGORY,
@@ -82,7 +83,7 @@ function SkeletonBlock({
 
 function DashboardSkeleton() {
   return (
-    <SafeAreaView className="flex-1 bg-black">
+    <SafeAreaView className="flex-1 bg-app">
       <ScrollView
         className="px-6"
         contentContainerStyle={{ paddingBottom: 60 }}
@@ -99,7 +100,7 @@ function DashboardSkeleton() {
           </View>
           <SkeletonBlock width={90} height={32} className="rounded-full" />
         </View>
-        <View className="bg-stone-900 rounded-3xl p-6 mb-5">
+        <View className="bg-surface rounded-3xl p-6 mb-5">
           <SkeletonBlock
             width={120}
             height={10}
@@ -164,10 +165,10 @@ function SectionTitle({
 }) {
   return (
     <View className="flex-row items-center mb-4">
-      <View className="w-7 h-7 rounded-lg bg-stone-900 border border-stone-800 items-center justify-center mr-3">
+      <View className="w-7 h-7 rounded-lg bg-surface border border-line items-center justify-center mr-3">
         <FontAwesome name={icon} size={12} color={color} />
       </View>
-      <Text className="text-white text-base font-bold tracking-tight">
+      <Text className="text-ink text-base font-bold tracking-tight">
         {label}
       </Text>
     </View>
@@ -195,6 +196,7 @@ export default function Dashboard() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const { format, symbol } = useCurrency();
+  const { colors } = useTheme();
   const [refreshing, setRefreshing] = useState(false);
 
   const {
@@ -204,6 +206,7 @@ export default function Dashboard() {
     displayExpenses,
     weeklyExpenses,
     metrics,
+    profile,
     categories,
     categoryMap,
     commuteTemplates,
@@ -216,6 +219,7 @@ export default function Dashboard() {
     updateTemplate,
     addTemplate,
     deleteTemplate,
+    deleteTemplateAsync,
     isAdding,
     isLoading,
   } = useExpenseSync(
@@ -261,6 +265,17 @@ export default function Dashboard() {
   const [templateDraft, setTemplateDraft] = useState<TemplateDraft | null>(
     null,
   );
+
+  // Month-end rollover (#4)
+  const [showRolloverModal, setShowRolloverModal] = useState(false);
+  const [rolloverAmount, setRolloverAmount] = useState(0);
+  const [rbBudget, setRbBudget] = useState("");
+  const [rbExpMonth, setRbExpMonth] = useState(() => new Date().getMonth());
+  const [rbExpDay, setRbExpDay] = useState(
+    () => new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate(),
+  );
+  const [rbSaving, setRbSaving] = useState(false);
+  const rolloverRanRef = useRef(false);
 
   const savedSources: Array<{name: string; budget: number}> =
     (user?.user_metadata?.custom_sources as any[]) || [{ name: "Cash", budget: 0 }];
@@ -342,8 +357,12 @@ export default function Dashboard() {
     })();
   }, [user?.id, categories]);
 
+  const awaitingNewBudget = user?.user_metadata?.awaiting_new_budget === true;
   const monthlyLeftover =
     monthlyBudget + totalIncomeMonthly - totalSpentMonthly;
+  // While waiting for the user to start a new budget period the leftover is shown as 0
+  // (the previous period's leftover has already been swept into savings).
+  const displayLeftover = awaitingNewBudget ? 0 : monthlyLeftover;
   const monthlyBudgetTotal = Math.max(monthlyBudget + totalIncomeMonthly, 1);
   const budgetUsedPercent = Math.min(
     100,
@@ -373,21 +392,110 @@ export default function Dashboard() {
     sendBudgetExpiryAlert(daysUntilExpiry, format(monthlyLeftover));
   }, [daysUntilExpiry, storedExpiry, isBudgetExpired]);
 
-  const handleTransferToSavings = async () => {
-    if (monthlyLeftover <= 0) return;
-    const { error } = await supabase
-      .from("profiles")
-      .update({ total_savings: totalSavings + monthlyLeftover })
-      .eq("id", user!.id);
-    if (!error) {
+  // --- Month-end rollover (#4) ---------------------------------------------
+  // When the budget period ends: sweep the remaining leftover into total savings,
+  // record it in the month-wise savings history, zero out the budget, and prompt
+  // the user to start a new period (new budget + end date).
+  const runRollover = async () => {
+    try {
+      const periodStart = user?.user_metadata?.budget_period_start
+        ? new Date(user.user_metadata.budget_period_start as string)
+        : new Date(budgetExpiryDate.getFullYear(), budgetExpiryDate.getMonth(), 1);
+      const { data: periodExpenses } = await supabase
+        .from("expenses")
+        .select("amount, category")
+        .eq("user_id", user!.id)
+        .gte("created_at", periodStart.toISOString())
+        .lte("created_at", budgetExpiryDate.toISOString());
+      const rows = periodExpenses || [];
+      const spent = rows
+        .filter((e) => e.category !== INCOME_CATEGORY && e.category !== LOAN_RETURN_CATEGORY)
+        .reduce((s, e) => s + Number(e.amount), 0);
+      const income = rows
+        .filter((e) => e.category === INCOME_CATEGORY)
+        .reduce((s, e) => s + Number(e.amount), 0);
+      const base =
+        (profile?.monthly_budget as number | undefined) ??
+        ((user?.user_metadata?.monthly_budget as number) || 0);
+      const leftover = Math.max(0, base + income - spent);
+
+      const monthKey = `${budgetExpiryDate.getFullYear()}-${String(budgetExpiryDate.getMonth() + 1).padStart(2, "0")}`;
+      const label = `${monthNames[budgetExpiryDate.getMonth()]} ${budgetExpiryDate.getFullYear()}`;
+      const history = (user?.user_metadata?.monthly_savings_history as any[]) || [];
+      const nextHistory = history.some((h) => h.key === monthKey)
+        ? history
+        : [...history, { key: monthKey, label, amount: leftover, date: new Date().toISOString() }];
+
+      await supabase
+        .from("profiles")
+        .update({ total_savings: totalSavings + leftover, monthly_budget: 0 })
+        .eq("id", user!.id);
+      await supabase.auth.updateUser({
+        data: {
+          monthly_budget: 0,
+          awaiting_new_budget: true,
+          last_rollover_key: storedExpiry,
+          monthly_savings_history: nextHistory,
+        },
+      });
+      await supabase.auth.refreshSession();
       queryClient.invalidateQueries({ queryKey: ["profile", user?.id] });
-      showNotification(
-        `${format(monthlyLeftover)} moved to savings`,
-        "success",
-        true,
-      );
+
+      setRolloverAmount(leftover);
+      setShowRolloverModal(true);
+      if (leftover > 0) {
+        showNotification(`${format(leftover)} from last period moved to savings`, "success", true);
+      }
+    } catch {
+      rolloverRanRef.current = false;
     }
   };
+
+  const handleRolloverSubmit = async () => {
+    const budget = Number(rbBudget);
+    if (!rbBudget || isNaN(budget) || budget < 1) {
+      showNotification("Enter a valid budget amount", "error");
+      return;
+    }
+    const expiry = new Date(today.getFullYear(), rbExpMonth, rbExpDay, 23, 59, 59);
+    setRbSaving(true);
+    try {
+      await supabase.from("profiles").update({ monthly_budget: budget }).eq("id", user!.id);
+      await supabase.auth.updateUser({
+        data: {
+          monthly_budget: budget,
+          budget_expiry: expiry.toISOString(),
+          budget_period_start: new Date().toISOString(),
+          awaiting_new_budget: false,
+        },
+      });
+      await supabase.auth.refreshSession();
+      queryClient.invalidateQueries({ queryKey: ["profile", user?.id] });
+      setShowRolloverModal(false);
+      setRbBudget("");
+      rolloverRanRef.current = false;
+      showNotification("New budget period started", "success", true);
+    } catch (e: any) {
+      showNotification(e.message || "Could not save new budget", "error");
+    } finally {
+      setRbSaving(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!user?.id) return;
+    if (user?.user_metadata?.is_new_user === true) return;
+    if (awaitingNewBudget) {
+      setShowRolloverModal(true);
+      return;
+    }
+    if (!storedExpiry || !isBudgetExpired) return;
+    if (user?.user_metadata?.last_rollover_key === storedExpiry) return;
+    if (rolloverRanRef.current) return;
+    rolloverRanRef.current = true;
+    runRollover();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, storedExpiry, isBudgetExpired, awaitingNewBudget]);
 
   const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -595,11 +703,16 @@ export default function Dashboard() {
     setTemplateDraft(null);
   };
 
-  const handleDeleteTemplate = () => {
+  const handleDeleteTemplate = async () => {
     if (!templateDraft?.id) return;
-    deleteTemplate(templateDraft.id);
-    showNotification("Template deleted", "info");
+    const id = templateDraft.id;
     setTemplateDraft(null);
+    try {
+      await deleteTemplateAsync(id);
+      showNotification("Template deleted", "info");
+    } catch (e: any) {
+      showNotification(e.message || "Could not delete template", "error");
+    }
   };
 
   if (isLoading) return <DashboardSkeleton />;
@@ -666,7 +779,7 @@ export default function Dashboard() {
         { name: "Cash", budget: Math.max(0, total - allocated) },
         ...nonCash.map(s => ({ name: s.name.trim(), budget: Number(s.budget) || 0 })),
       ];
-      await supabase.auth.updateUser({ data: { is_new_user: false, onboarding_complete: true, custom_sources: cleanedSources, monthly_budget: budget, savings_goal: Number(obGoal) || 0 } });
+      await supabase.auth.updateUser({ data: { is_new_user: false, onboarding_complete: true, custom_sources: cleanedSources, monthly_budget: budget, savings_goal: Number(obGoal) || 0, budget_period_start: new Date().toISOString() } });
       await supabase.auth.refreshSession();
     } catch (e: any) {
       setObError(e.message || "Could not save settings");
@@ -700,7 +813,7 @@ export default function Dashboard() {
     reminderEnabled && !loggedToday && !reminderDismissed && !isAdding;
 
   return (
-    <SafeAreaView className="flex-1 bg-black">
+    <SafeAreaView className="flex-1 bg-app">
       <Modal visible={showOnboardingGate} animationType="fade" statusBarTranslucent>
         <SafeAreaView style={{ flex: 1, backgroundColor: "#000" }}>
           <ScrollView
@@ -875,7 +988,7 @@ export default function Dashboard() {
           <View className="flex-row justify-between items-center mb-5 mt-1">
             <View className="flex-1">
               <View className="flex-row items-center">
-                <Text className="text-3xl font-bold text-white tracking-tight">
+                <Text className="text-3xl font-bold text-ink tracking-tight">
                   Hyper Wallet
                 </Text>
                 {streak >= 2 && (
@@ -897,12 +1010,12 @@ export default function Dashboard() {
                   setShowNotifModal(true);
                   markAllRead();
                 }}
-                className="w-11 h-11 bg-stone-900 border border-stone-800 rounded-full items-center justify-center active:bg-stone-800 mr-2"
+                className="w-11 h-11 bg-surface border border-line rounded-full items-center justify-center active:bg-elevated mr-2"
               >
                 <FontAwesome name="bell" size={15} color="#34d399" />
                 {unreadCount > 0 && (
                   <View className="absolute top-1.5 right-1.5 min-w-[18px] h-[18px] px-1 bg-rose-500 rounded-full items-center justify-center border-2 border-black">
-                    <Text className="text-white text-[9px] font-bold">
+                    <Text className="text-ink text-[9px] font-bold">
                       {unreadCount > 9 ? "9+" : unreadCount}
                     </Text>
                   </View>
@@ -937,8 +1050,8 @@ export default function Dashboard() {
             </Animated.View>
           )}
 
-          {/* Budget Expired Banner */}
-          {isBudgetExpired && monthlyLeftover > 0 && (
+          {/* Awaiting-new-budget Banner (period ended, leftover already swept to savings) */}
+          {awaitingNewBudget && (
             <Animated.View
               entering={FadeIn.duration(300)}
               className="bg-violet-500/10 border border-violet-500/30 rounded-2xl px-4 py-3 mb-5 flex-row items-center"
@@ -951,15 +1064,15 @@ export default function Dashboard() {
                   Budget period ended
                 </Text>
                 <Text className="text-violet-200/70 text-xs mt-0.5">
-                  {format(monthlyLeftover)} leftover — move to savings?
+                  Leftover moved to savings — start a new period
                 </Text>
               </View>
               <TouchableOpacity
-                onPress={handleTransferToSavings}
+                onPress={() => setShowRolloverModal(true)}
                 className="px-3 py-2 rounded-xl bg-violet-500/20 border border-violet-500/30 active:bg-violet-500/30 ml-2"
               >
                 <Text className="text-violet-300 text-xs font-bold">
-                  Transfer
+                  Set Budget
                 </Text>
               </TouchableOpacity>
             </Animated.View>
@@ -968,7 +1081,7 @@ export default function Dashboard() {
           {/* Hero Card */}
           <Animated.View
             entering={FadeIn.duration(400)}
-            className={`rounded-3xl p-6 mb-5 ${monthlyLeftover < 0 ? "bg-rose-700" : "bg-emerald-600"}`}
+            className={`rounded-3xl p-6 mb-5 ${displayLeftover < 0 ? "bg-rose-700" : "bg-emerald-600"}`}
           >
             <View className="flex-row justify-between items-start mb-1">
               <View className="flex-1">
@@ -976,16 +1089,16 @@ export default function Dashboard() {
                   Monthly Leftover
                 </Text>
                 <Text className="text-4xl font-bold text-white tracking-tight">
-                  {monthlyLeftover < 0 ? "-" : ""}
-                  {format(Math.abs(monthlyLeftover))}
+                  {displayLeftover < 0 ? "-" : ""}
+                  {format(Math.abs(displayLeftover))}
                 </Text>
               </View>
               <View className="items-end gap-2">
                 <View
-                  className={`px-3 py-1.5 rounded-full ${monthlyLeftover >= 0 ? "bg-black/20" : "bg-black/30"}`}
+                  className={`px-3 py-1.5 rounded-full ${displayLeftover >= 0 ? "bg-black/20" : "bg-black/30"}`}
                 >
                   <Text className="text-white text-[11px] font-semibold uppercase tracking-wider">
-                    {monthlyLeftover >= 0 ? "On Track" : "Deficit"}
+                    {displayLeftover >= 0 ? "On Track" : "Deficit"}
                   </Text>
                 </View>
                 <TouchableOpacity
@@ -1077,13 +1190,13 @@ export default function Dashboard() {
           </Animated.View>
 
           {/* Chart: Weekly / Monthly toggle */}
-          <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-5">
+          <View className="bg-surface border border-line rounded-3xl p-5 mb-5">
             <View className="flex-row items-center justify-between mb-4">
               <View className="flex-row items-center flex-1 mr-3">
-                <View className="w-7 h-7 rounded-lg bg-stone-900 border border-stone-800 items-center justify-center mr-3">
+                <View className="w-7 h-7 rounded-lg bg-surface border border-line items-center justify-center mr-3">
                   <FontAwesome name="bar-chart" size={12} color="#34d399" />
                 </View>
-                <Text className="text-white text-base font-bold tracking-tight">
+                <Text className="text-ink text-base font-bold tracking-tight">
                   {chartView === "weekly"
                     ? "Weekly Overview"
                     : "Monthly Overview"}
@@ -1096,7 +1209,7 @@ export default function Dashboard() {
                   </View>
                 )}
               </View>
-              <View className="flex-row bg-black rounded-full p-1 border border-stone-800">
+              <View className="flex-row bg-app rounded-full p-1 border border-line">
                 {(["weekly", "monthly"] as const).map((v) => (
                   <TouchableOpacity
                     key={v}
@@ -1104,7 +1217,7 @@ export default function Dashboard() {
                     className={`px-3 py-1.5 rounded-full ${chartView === v ? "bg-emerald-600" : ""}`}
                   >
                     <Text
-                      className={`text-[11px] font-semibold uppercase tracking-wider ${chartView === v ? "text-white" : "text-stone-500"}`}
+                      className={`text-[11px] font-semibold uppercase tracking-wider ${chartView === v ? "text-white" : "text-muted"}`}
                     >
                       {v === "weekly" ? "Week" : "Month"}
                     </Text>
@@ -1129,7 +1242,7 @@ export default function Dashboard() {
                         style={{ height: "100%" }}
                       >
                         <Text
-                          className="text-stone-500 text-[10px] font-semibold mb-1.5"
+                          className="text-muted text-[10px] font-semibold mb-1.5"
                           numberOfLines={1}
                           style={{ minHeight: 14 }}
                         >
@@ -1155,7 +1268,7 @@ export default function Dashboard() {
                     return (
                       <Text
                         key={idx}
-                        className={`text-[11px] font-semibold flex-1 text-center ${isCurrent ? "text-emerald-400" : "text-stone-500"}`}
+                        className={`text-[11px] font-semibold flex-1 text-center ${isCurrent ? "text-emerald-400" : "text-muted"}`}
                       >
                         {d}
                       </Text>
@@ -1184,7 +1297,7 @@ export default function Dashboard() {
                           style={{ width: 26, marginHorizontal: 1 }}
                         >
                           <Text
-                            className="text-stone-600 text-[9px] font-semibold mb-1"
+                            className="text-faint text-[9px] font-semibold mb-1"
                             style={{ minHeight: 12 }}
                             numberOfLines={1}
                           >
@@ -1217,7 +1330,7 @@ export default function Dashboard() {
                       return (
                         <Text
                           key={idx}
-                          className={`text-[9px] font-semibold text-center ${isCurrent ? "text-emerald-400" : "text-stone-600"}`}
+                          className={`text-[9px] font-semibold text-center ${isCurrent ? "text-emerald-400" : "text-faint"}`}
                           style={{ width: 28 }}
                         >
                           {idx + 1}
@@ -1240,14 +1353,14 @@ export default function Dashboard() {
           )}
 
           {/* Add Entry */}
-          <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-3">
+          <View className="bg-surface border border-line rounded-3xl p-5 mb-3">
             <View className="flex-row items-center justify-between mb-4">
-              <View className="flex-row bg-black rounded-full p-1 border border-stone-800">
+              <View className="flex-row bg-app rounded-full p-1 border border-line">
                 <TouchableOpacity
                   onPress={() => setLogMode("expense")}
                   className={`px-3.5 py-1.5 rounded-full ${logMode === "expense" ? "bg-rose-500/90" : ""}`}
                 >
-                  <Text className={`text-[11px] font-semibold uppercase tracking-wider ${logMode === "expense" ? "text-white" : "text-stone-500"}`}>
+                  <Text className={`text-[11px] font-semibold uppercase tracking-wider ${logMode === "expense" ? "text-white" : "text-muted"}`}>
                     − Expense
                   </Text>
                 </TouchableOpacity>
@@ -1255,17 +1368,17 @@ export default function Dashboard() {
                   onPress={() => setLogMode("income")}
                   className={`px-3.5 py-1.5 rounded-full ${logMode === "income" ? "bg-emerald-600" : ""}`}
                 >
-                  <Text className={`text-[11px] font-semibold uppercase tracking-wider ${logMode === "income" ? "text-white" : "text-stone-500"}`}>
+                  <Text className={`text-[11px] font-semibold uppercase tracking-wider ${logMode === "income" ? "text-white" : "text-muted"}`}>
                     + Income
                   </Text>
                 </TouchableOpacity>
               </View>
               <TouchableOpacity
                 onPress={() => setShowDateModal(true)}
-                className={`flex-row items-center px-3 py-1.5 rounded-full border ${isToday ? "bg-stone-800/50 border-stone-700" : "bg-amber-500/10 border-amber-500/30"}`}
+                className={`flex-row items-center px-3 py-1.5 rounded-full border ${isToday ? "bg-stone-800/50 border-line" : "bg-amber-500/10 border-amber-500/30"}`}
               >
                 <FontAwesome name="calendar" size={10} color={isToday ? "#a8a29e" : "#fbbf24"} />
-                <Text className={`text-[11px] font-semibold ml-2 ${isToday ? "text-stone-400" : "text-amber-400"}`}>
+                <Text className={`text-[11px] font-semibold ml-2 ${isToday ? "text-muted" : "text-amber-400"}`}>
                   {isToday ? "Today" : `${monthNames[selectedMonth]} ${selectedDay}`}
                 </Text>
               </TouchableOpacity>
@@ -1275,7 +1388,7 @@ export default function Dashboard() {
               placeholderTextColor="#78716c"
               value={customExpense.description}
               onChangeText={text => setCustomExpense(prev => ({ ...prev, description: text }))}
-              className="bg-black text-white text-sm px-4 py-3.5 rounded-2xl mb-3 border border-stone-800"
+              className="bg-app text-ink text-sm px-4 py-3.5 rounded-2xl mb-3 border border-line"
             />
             {logMode === "expense" && (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-3">
@@ -1283,9 +1396,9 @@ export default function Dashboard() {
                   <TouchableOpacity
                     key={cat.id}
                     onPress={() => setCustomExpense(prev => ({ ...prev, category: cat.name }))}
-                    className={`px-3.5 py-2 mr-2 rounded-full border ${customExpense.category === cat.name ? "bg-emerald-600 border-emerald-500" : "bg-black border-stone-800"}`}
+                    className={`px-3.5 py-2 mr-2 rounded-full border ${customExpense.category === cat.name ? "bg-emerald-600 border-emerald-500" : "bg-app border-line"}`}
                   >
-                    <Text className={`text-xs font-semibold ${customExpense.category === cat.name ? "text-white" : "text-stone-400"}`}>
+                    <Text className={`text-xs font-semibold ${customExpense.category === cat.name ? "text-white" : "text-muted"}`}>
                       {cat.icon} {cat.name}
                     </Text>
                   </TouchableOpacity>
@@ -1298,24 +1411,24 @@ export default function Dashboard() {
                   <TouchableOpacity
                     key={src.name}
                     onPress={() => setActiveSource(src.name)}
-                    className={`px-3 py-1.5 mr-2 rounded-full border ${activeSource === src.name ? "bg-stone-700 border-stone-500" : "bg-black border-stone-800"}`}
+                    className={`px-3 py-1.5 mr-2 rounded-full border ${activeSource === src.name ? "bg-faint border-stone-500" : "bg-app border-line"}`}
                   >
-                    <Text className={`text-xs font-semibold ${activeSource === src.name ? "text-stone-100" : "text-stone-500"}`}>
+                    <Text className={`text-xs font-semibold ${activeSource === src.name ? "text-white" : "text-muted"}`}>
                       {src.name}
                     </Text>
                   </TouchableOpacity>
                 ))}
               </ScrollView>
             )}
-            <View className="flex-row items-center bg-black rounded-2xl px-4 py-3 border border-stone-800 mb-3">
-              <Text className="text-stone-500 text-base font-semibold mr-2">{symbol}</Text>
+            <View className="flex-row items-center bg-app rounded-2xl px-4 py-3 border border-line mb-3">
+              <Text className="text-muted text-base font-semibold mr-2">{symbol}</Text>
               <TextInput
                 placeholder="0"
                 placeholderTextColor="#78716c"
                 keyboardType="numeric"
                 value={customExpense.amount}
                 onChangeText={text => setCustomExpense(prev => ({ ...prev, amount: text }))}
-                className="flex-1 text-white font-bold text-lg"
+                className="flex-1 text-ink font-bold text-lg"
               />
             </View>
             <BounceCard
@@ -1329,17 +1442,17 @@ export default function Dashboard() {
           </View>
 
           {/* Quick Log */}
-          <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-5">
+          <View className="bg-surface border border-line rounded-3xl p-5 mb-5">
             <View className="flex-row items-center justify-between mb-4">
               <View className="flex-row items-center">
-                <View className="w-7 h-7 rounded-lg bg-black border border-stone-800 items-center justify-center mr-3">
+                <View className="w-7 h-7 rounded-lg bg-app border border-line items-center justify-center mr-3">
                   <FontAwesome name="bolt" size={12} color="#34d399" />
                 </View>
-                <Text className="text-white text-base font-bold tracking-tight">
+                <Text className="text-ink text-base font-bold tracking-tight">
                   Quick Log
                 </Text>
               </View>
-              <View className="flex-row bg-black rounded-full p-1 border border-stone-800">
+              <View className="flex-row bg-app rounded-full p-1 border border-line">
                 {(["commute", "food", "other"] as const).map((g) => (
                   <TouchableOpacity
                     key={g}
@@ -1347,7 +1460,7 @@ export default function Dashboard() {
                     className={`px-3 py-1.5 rounded-full ${quickLogTab === g ? "bg-emerald-600" : ""}`}
                   >
                     <Text
-                      className={`text-[11px] font-semibold uppercase tracking-wider ${quickLogTab === g ? "text-white" : "text-stone-500"}`}
+                      className={`text-[11px] font-semibold uppercase tracking-wider ${quickLogTab === g ? "text-white" : "text-muted"}`}
                     >
                       {g}
                     </Text>
@@ -1366,22 +1479,30 @@ export default function Dashboard() {
                   <BounceCard
                     onPress={() => handleTemplateLog(t.id, t.title, t.category)}
                     onLongPress={() => openEditTemplate(t)}
-                    className="bg-black/40 border border-stone-800 rounded-2xl py-3 px-2 items-center"
+                    className="bg-black/40 border border-line rounded-2xl py-3 px-2 items-center"
                   >
+                    {/* Visible edit affordance (works for predefined & custom templates) */}
+                    <TouchableOpacity
+                      onPress={() => openEditTemplate(t)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      style={{ position: 'absolute', top: 6, right: 6, width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, zIndex: 10 }}
+                    >
+                      <FontAwesome name="pencil" size={10} color={colors.muted} />
+                    </TouchableOpacity>
                     <Text className="text-2xl mb-2">{t.icon}</Text>
                     <Text
-                      className="text-stone-300 text-[11px] font-semibold uppercase tracking-wider text-center mb-2.5"
+                      className="text-ink text-[11px] font-semibold uppercase tracking-wider text-center mb-2.5"
                       numberOfLines={1}
                     >
                       {t.title}
                     </Text>
-                    <View className="flex-row items-center bg-stone-900 rounded-lg px-2 py-1 mb-2 border border-stone-800 w-full">
-                      <Text className="text-stone-500 text-[10px] mr-1">{symbol}</Text>
+                    <View className="flex-row items-center bg-surface rounded-lg px-2 py-1 mb-2 border border-line w-full">
+                      <Text className="text-muted text-[10px] mr-1">{symbol}</Text>
                       <TextInput
                         value={templateAmounts[t.id] ?? t.amount.toString()}
                         onChangeText={(val) => setTemplateAmounts(prev => ({ ...prev, [t.id]: val }))}
                         keyboardType="numeric"
-                        className="text-white font-semibold text-xs flex-1 py-0.5 text-center"
+                        className="text-ink font-semibold text-xs flex-1 py-0.5 text-center"
                       />
                     </View>
                     {savedSources.length > 1 && (
@@ -1394,11 +1515,11 @@ export default function Dashboard() {
                               onPress={e => { e.stopPropagation?.(); setTemplateSources(prev => ({ ...prev, [t.id]: src.name })); }}
                               style={{
                                 paddingHorizontal: 8, paddingVertical: 3, marginRight: 4, borderRadius: 99,
-                                backgroundColor: selected ? '#059669' : '#000',
-                                borderWidth: 1, borderColor: selected ? '#10b981' : '#292524',
+                                backgroundColor: selected ? '#059669' : colors.elevated,
+                                borderWidth: 1, borderColor: selected ? '#10b981' : colors.line,
                               }}
                             >
-                              <Text style={{ fontSize: 9, fontWeight: '700', color: selected ? '#fff' : '#57534e' }}>
+                              <Text style={{ fontSize: 9, fontWeight: '700', color: selected ? '#fff' : colors.faint }}>
                                 {src.name}
                               </Text>
                             </TouchableOpacity>
@@ -1417,47 +1538,22 @@ export default function Dashboard() {
               <View style={{ width: "33.33%" }} className="px-1 mb-2">
                 <TouchableOpacity
                   onPress={() => openNewTemplate(quickLogTab)}
-                  className="bg-black/20 border border-dashed border-stone-700 rounded-2xl py-3 px-2 items-center justify-center"
+                  className="bg-black/20 border border-dashed border-line rounded-2xl py-3 px-2 items-center justify-center"
                   style={{ minHeight: 120 }}
                 >
-                  <View className="w-10 h-10 rounded-full bg-stone-800 items-center justify-center mb-2">
+                  <View className="w-10 h-10 rounded-full bg-elevated items-center justify-center mb-2">
                     <FontAwesome name="plus" size={14} color="#78716c" />
                   </View>
-                  <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-wider text-center">
+                  <Text className="text-muted text-[11px] font-semibold uppercase tracking-wider text-center">
                     Add Template
                   </Text>
                 </TouchableOpacity>
               </View>
             </View>
             {activeTemplates.length > 0 && (
-              <Text className="text-stone-600 text-[10px] text-center mt-2 uppercase tracking-widest">
-                Long-press a tile to edit
+              <Text className="text-faint text-[10px] text-center mt-2 uppercase tracking-widest">
+                Tap ✎ to edit or delete a template
               </Text>
-            )}
-            {activeTemplates.length === 0 && categories.filter(c => c.name !== INCOME_CATEGORY).length > 0 && (
-              <View className="mt-3">
-                <Text className="text-stone-600 text-[10px] font-semibold uppercase tracking-widest mb-3 text-center">
-                  Quick add by category
-                </Text>
-                <View className="flex-row flex-wrap" style={{ gap: 8 }}>
-                  {categories.filter(c => c.name !== INCOME_CATEGORY).map(cat => (
-                    <TouchableOpacity
-                      key={cat.id}
-                      onPress={() => {
-                        setCustomExpense(prev => ({ ...prev, category: cat.name }));
-                        setLogMode("expense");
-                      }}
-                      className="flex-row items-center bg-black border border-stone-800 rounded-2xl px-3 py-2 active:bg-stone-800"
-                    >
-                      <Text className="text-base mr-2">{cat.icon}</Text>
-                      <Text className="text-stone-300 text-xs font-semibold">{cat.name}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                <Text className="text-stone-700 text-[10px] text-center mt-3 uppercase tracking-widest">
-                  Tap to pre-select · Add templates above for faster logging
-                </Text>
-              </View>
             )}
           </View>
         </ScrollView>
@@ -1476,18 +1572,18 @@ export default function Dashboard() {
         >
           <Pressable
             onPress={() => {}}
-            className="bg-stone-900 rounded-t-3xl p-6 border-t border-stone-800"
+            className="bg-surface rounded-t-3xl p-6 border-t border-line"
           >
             <TouchableOpacity onPress={() => setShowDateModal(false)} activeOpacity={0.6} className="self-center mb-6 py-2 px-8">
-              <View className="w-12 h-1.5 bg-stone-700 rounded-full" />
+              <View className="w-12 h-1.5 bg-faint rounded-full" />
             </TouchableOpacity>
-            <Text className="text-xl font-bold text-white tracking-tight mb-1">
+            <Text className="text-xl font-bold text-ink tracking-tight mb-1">
               Select Date
             </Text>
-            <Text className="text-stone-400 text-sm mb-5">
+            <Text className="text-muted text-sm mb-5">
               Choose when this entry was made
             </Text>
-            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
+            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
               Month
             </Text>
             <ScrollView
@@ -1508,10 +1604,10 @@ export default function Dashboard() {
                       )
                         setSelectedDay(1);
                     }}
-                    className={`px-3.5 py-2 mr-2 rounded-full border ${selectedMonth === idx ? "bg-emerald-600 border-emerald-500" : "bg-black border-stone-800"}`}
+                    className={`px-3.5 py-2 mr-2 rounded-full border ${selectedMonth === idx ? "bg-emerald-600 border-emerald-500" : "bg-app border-line"}`}
                   >
                     <Text
-                      className={`text-xs font-semibold uppercase tracking-wider ${selectedMonth === idx ? "text-white" : "text-stone-500"}`}
+                      className={`text-xs font-semibold uppercase tracking-wider ${selectedMonth === idx ? "text-white" : "text-muted"}`}
                     >
                       {m}
                     </Text>
@@ -1519,7 +1615,7 @@ export default function Dashboard() {
                 );
               })}
             </ScrollView>
-            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
+            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
               Day
             </Text>
             <ScrollView
@@ -1534,10 +1630,10 @@ export default function Dashboard() {
                   <TouchableOpacity
                     key={d}
                     onPress={() => setSelectedDay(d)}
-                    className={`w-10 h-10 mr-1.5 rounded-full items-center justify-center border ${selectedDay === d ? "bg-emerald-600 border-emerald-500" : "bg-black border-stone-800"}`}
+                    className={`w-10 h-10 mr-1.5 rounded-full items-center justify-center border ${selectedDay === d ? "bg-emerald-600 border-emerald-500" : "bg-app border-line"}`}
                   >
                     <Text
-                      className={`text-xs font-semibold ${selectedDay === d ? "text-white" : "text-stone-500"}`}
+                      className={`text-xs font-semibold ${selectedDay === d ? "text-white" : "text-muted"}`}
                     >
                       {d}
                     </Text>
@@ -1564,32 +1660,32 @@ export default function Dashboard() {
         transparent={false}
         onRequestClose={() => setShowBudgetModal(false)}
       >
-        <View style={{ flex: 1, backgroundColor: '#000' }}>
-          <View style={{ flex: 1, backgroundColor: '#111' }}>
+        <View style={{ flex: 1, backgroundColor: colors.app }}>
+          <View style={{ flex: 1, backgroundColor: colors.app }}>
               <ScrollView
                 keyboardShouldPersistTaps="handled"
                 contentContainerStyle={{ padding: 24, paddingBottom: 48 }}
                 showsVerticalScrollIndicator={false}
               >
             <View className="flex-row items-center justify-between mb-6 mt-2">
-              <Text className="text-2xl font-bold text-white tracking-tight">Wallet Settings</Text>
+              <Text className="text-2xl font-bold text-ink tracking-tight">Wallet Settings</Text>
               <TouchableOpacity
                 onPress={() => setShowBudgetModal(false)}
-                className="w-10 h-10 rounded-full bg-stone-800 items-center justify-center active:bg-stone-700"
+                className="w-10 h-10 rounded-full bg-elevated items-center justify-center active:bg-faint"
               >
                 <FontAwesome name="times" size={16} color="#a8a29e" />
               </TouchableOpacity>
             </View>
-            <Text className="text-stone-500 text-sm mb-5">Configure your monthly budget, goals & sources</Text>
+            <Text className="text-muted text-sm mb-5">Configure your monthly budget, goals & sources</Text>
             <Text className="text-emerald-400 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
               Monthly Budget
             </Text>
-            <View className="bg-black rounded-2xl p-4 border border-stone-800 mb-4 flex-row items-center">
-              <Text className="text-stone-500 text-lg font-semibold mr-3">
+            <View className="bg-app rounded-2xl p-4 border border-line mb-4 flex-row items-center">
+              <Text className="text-muted text-lg font-semibold mr-3">
                 {symbol}
               </Text>
               <TextInput
-                className="flex-1 text-white text-xl font-bold tracking-tight"
+                className="flex-1 text-ink text-xl font-bold tracking-tight"
                 keyboardType="numeric"
                 value={newBudget}
                 onChangeText={setNewBudget}
@@ -1598,8 +1694,8 @@ export default function Dashboard() {
             <Text className="text-emerald-400 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
               Monthly Savings Goal
             </Text>
-            <View className="bg-black rounded-2xl p-4 border border-emerald-900/30 mb-5 flex-row items-center">
-              <Text className="text-stone-500 text-lg font-semibold mr-3">
+            <View className="bg-app rounded-2xl p-4 border border-emerald-900/30 mb-5 flex-row items-center">
+              <Text className="text-muted text-lg font-semibold mr-3">
                 {symbol}
               </Text>
               <TextInput
@@ -1619,15 +1715,15 @@ export default function Dashboard() {
                   <Text className="text-emerald-400 text-[11px] font-semibold uppercase tracking-widest mb-1 ml-1">
                     Sources
                   </Text>
-                  <Text className="text-stone-500 text-xs mb-3 ml-1">
+                  <Text className="text-muted text-xs mb-3 ml-1">
                     Divide your budget across payment sources. Cash holds the remainder.
                   </Text>
 
                   {/* Cash — auto remainder */}
-                  <View className="flex-row items-center bg-black rounded-2xl px-4 py-3 border border-stone-800 mb-2">
-                    <Text className="text-white text-sm font-semibold flex-1">Cash</Text>
+                  <View className="flex-row items-center bg-app rounded-2xl px-4 py-3 border border-line mb-2">
+                    <Text className="text-ink text-sm font-semibold flex-1">Cash</Text>
                     <Text className="text-emerald-400 text-sm font-bold">{format(cashRemainder)}</Text>
-                    <Text className="text-stone-600 text-xs ml-1">remaining</Text>
+                    <Text className="text-faint text-xs ml-1">remaining</Text>
                   </View>
 
                   {/* Non-cash sources */}
@@ -1635,21 +1731,21 @@ export default function Dashboard() {
                     const globalIdx = sourceDrafts.findIndex(s => s.name === src.name);
                     const amt = Number(src.budget) || 0;
                     return (
-                      <View key={src.name} className="flex-row items-center bg-black rounded-2xl px-3 py-2.5 border border-stone-800 mb-2 gap-2">
-                        <Text className="text-white text-sm font-semibold flex-1" numberOfLines={1}>{src.name}</Text>
-                        <View className="flex-row items-center bg-stone-900 rounded-xl px-2 py-1.5 border border-stone-800 w-24">
-                          <Text className="text-stone-500 text-xs mr-1">{symbol}</Text>
+                      <View key={src.name} className="flex-row items-center bg-app rounded-2xl px-3 py-2.5 border border-line mb-2 gap-2">
+                        <Text className="text-ink text-sm font-semibold flex-1" numberOfLines={1}>{src.name}</Text>
+                        <View className="flex-row items-center bg-surface rounded-xl px-2 py-1.5 border border-line w-24">
+                          <Text className="text-muted text-xs mr-1">{symbol}</Text>
                           <TextInput
                             value={src.budget}
                             onChangeText={v => setSourceDrafts(prev => prev.map((s, i) => i === globalIdx ? { ...s, budget: v } : s))}
                             keyboardType="numeric"
                             placeholder="0"
                             placeholderTextColor="#57534e"
-                            className="flex-1 text-white text-xs font-semibold"
+                            className="flex-1 text-ink text-xs font-semibold"
                           />
                         </View>
                         {total > 0 && (
-                          <Text className="text-stone-500 text-[10px] w-20">
+                          <Text className="text-muted text-[10px] w-20">
                             {`/ ${format(total)}`}
                           </Text>
                         )}
@@ -1665,23 +1761,23 @@ export default function Dashboard() {
 
                   {/* Add new source */}
                   <View className="flex-row gap-2 mb-5">
-                    <View className="flex-1 bg-black rounded-2xl px-3 py-2.5 border border-stone-800">
+                    <View className="flex-1 bg-app rounded-2xl px-3 py-2.5 border border-line">
                       <TextInput
                         value={newSourceName}
                         onChangeText={setNewSourceName}
                         placeholder="New source (e.g. JazzCash)"
                         placeholderTextColor="#57534e"
-                        className="text-white text-sm"
+                        className="text-ink text-sm"
                       />
                     </View>
-                    <View className="bg-black rounded-2xl px-3 py-2.5 border border-stone-800 w-24">
+                    <View className="bg-app rounded-2xl px-3 py-2.5 border border-line w-24">
                       <TextInput
                         value={newSourceBudget}
                         onChangeText={setNewSourceBudget}
                         placeholder="Amount"
                         placeholderTextColor="#57534e"
                         keyboardType="numeric"
-                        className="text-white text-sm"
+                        className="text-ink text-sm"
                       />
                     </View>
                     <TouchableOpacity
@@ -1704,10 +1800,10 @@ export default function Dashboard() {
             <Text className="text-emerald-400 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
               Budget Expiry Date
             </Text>
-            <Text className="text-stone-500 text-xs mb-3 ml-1">
+            <Text className="text-muted text-xs mb-3 ml-1">
               Leftover moves to savings after this date
             </Text>
-            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
+            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
               Month
             </Text>
             <ScrollView
@@ -1727,17 +1823,17 @@ export default function Dashboard() {
                     ).getDate();
                     if (expiryDay > maxDay) setExpiryDay(maxDay);
                   }}
-                  className={`px-3.5 py-2 mr-2 rounded-full border ${expiryMonth === idx ? "bg-emerald-600 border-emerald-500" : "bg-black border-stone-800"}`}
+                  className={`px-3.5 py-2 mr-2 rounded-full border ${expiryMonth === idx ? "bg-emerald-600 border-emerald-500" : "bg-app border-line"}`}
                 >
                   <Text
-                    className={`text-xs font-semibold uppercase tracking-wider ${expiryMonth === idx ? "text-white" : "text-stone-500"}`}
+                    className={`text-xs font-semibold uppercase tracking-wider ${expiryMonth === idx ? "text-white" : "text-muted"}`}
                   >
                     {m}
                   </Text>
                 </TouchableOpacity>
               ))}
             </ScrollView>
-            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
+            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
               Day
             </Text>
             <ScrollView
@@ -1758,31 +1854,31 @@ export default function Dashboard() {
                 <TouchableOpacity
                   key={d}
                   onPress={() => setExpiryDay(d)}
-                  className={`w-10 h-10 mr-1.5 rounded-full items-center justify-center border ${expiryDay === d ? "bg-emerald-600 border-emerald-500" : "bg-black border-stone-800"}`}
+                  className={`w-10 h-10 mr-1.5 rounded-full items-center justify-center border ${expiryDay === d ? "bg-emerald-600 border-emerald-500" : "bg-app border-line"}`}
                 >
                   <Text
-                    className={`text-xs font-semibold ${expiryDay === d ? "text-white" : "text-stone-500"}`}
+                    className={`text-xs font-semibold ${expiryDay === d ? "text-white" : "text-muted"}`}
                   >
                     {d}
                   </Text>
                 </TouchableOpacity>
               ))}
             </ScrollView>
-            <View className="bg-black/40 p-4 rounded-2xl border border-stone-800 mb-5">
+            <View className="bg-black/40 p-4 rounded-2xl border border-line mb-5">
               <View className="flex-row justify-between">
                 <View>
-                  <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-1">
+                  <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-1">
                     Weekly Split
                   </Text>
-                  <Text className="text-white text-base font-bold tracking-tight">
+                  <Text className="text-ink text-base font-bold tracking-tight">
                     {format(Number(newBudget) / 4)}
                   </Text>
                 </View>
                 <View className="items-end">
-                  <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-1">
+                  <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-1">
                     Daily Limit
                   </Text>
-                  <Text className="text-white text-base font-bold tracking-tight">
+                  <Text className="text-ink text-base font-bold tracking-tight">
                     {format(Number(newBudget) / 30)}
                   </Text>
                 </View>
@@ -1791,9 +1887,9 @@ export default function Dashboard() {
             <View className="flex-row gap-3">
               <TouchableOpacity
                 onPress={() => setShowBudgetModal(false)}
-                className="flex-1 py-4 rounded-2xl bg-stone-800 items-center"
+                className="flex-1 py-4 rounded-2xl bg-elevated items-center"
               >
-                <Text className="text-white text-sm font-semibold uppercase tracking-wider">
+                <Text className="text-ink text-sm font-semibold uppercase tracking-wider">
                   Cancel
                 </Text>
               </TouchableOpacity>
@@ -1825,29 +1921,29 @@ export default function Dashboard() {
         >
           <Pressable
             onPress={() => {}}
-            className="bg-stone-900 rounded-t-3xl border-t border-stone-800"
+            className="bg-surface rounded-t-3xl border-t border-line"
             style={{ maxHeight: "75%" }}
           >
             <View className="p-6 pb-4">
               <TouchableOpacity onPress={() => setShowNotifModal(false)} activeOpacity={0.6} className="self-center mb-5 py-2 px-8">
-                <View className="w-12 h-1.5 bg-stone-700 rounded-full" />
+                <View className="w-12 h-1.5 bg-faint rounded-full" />
               </TouchableOpacity>
               <View className="flex-row items-center justify-between mb-1">
-                <Text className="text-xl font-bold text-white tracking-tight">
+                <Text className="text-xl font-bold text-ink tracking-tight">
                   Notifications
                 </Text>
                 {history.length > 0 && (
                   <TouchableOpacity
                     onPress={clearHistory}
-                    className="px-3 py-1.5 rounded-full bg-stone-800 active:bg-stone-700"
+                    className="px-3 py-1.5 rounded-full bg-elevated active:bg-faint"
                   >
-                    <Text className="text-stone-300 text-[11px] font-semibold uppercase tracking-wider">
+                    <Text className="text-ink text-[11px] font-semibold uppercase tracking-wider">
                       Clear
                     </Text>
                   </TouchableOpacity>
                 )}
               </View>
-              <Text className="text-stone-400 text-sm">
+              <Text className="text-muted text-sm">
                 Recent activity from this session
               </Text>
             </View>
@@ -1861,7 +1957,7 @@ export default function Dashboard() {
                   <View className="w-14 h-14 bg-stone-800/50 rounded-2xl items-center justify-center mb-3">
                     <FontAwesome name="bell-o" size={20} color="#52525b" />
                   </View>
-                  <Text className="text-stone-400 text-sm font-semibold text-center">
+                  <Text className="text-muted text-sm font-semibold text-center">
                     No notifications
                   </Text>
                 </View>
@@ -1882,7 +1978,7 @@ export default function Dashboard() {
                   return (
                     <View
                       key={item.id}
-                      className="flex-row items-start bg-black/40 border border-stone-800 rounded-2xl px-4 py-3 mb-2"
+                      className="flex-row items-start bg-black/40 border border-line rounded-2xl px-4 py-3 mb-2"
                     >
                       <View
                         className="w-8 h-8 rounded-full items-center justify-center mr-3"
@@ -1895,10 +1991,10 @@ export default function Dashboard() {
                         />
                       </View>
                       <View className="flex-1">
-                        <Text className="text-white text-sm font-semibold">
+                        <Text className="text-ink text-sm font-semibold">
                           {item.message}
                         </Text>
-                        <Text className="text-stone-500 text-[11px] mt-0.5">
+                        <Text className="text-muted text-[11px] mt-0.5">
                           {new Date(item.at).toLocaleTimeString([], {
                             hour: "2-digit",
                             minute: "2-digit",
@@ -1914,37 +2010,41 @@ export default function Dashboard() {
         </Pressable>
       </Modal>
 
-      {/* Template Editor Modal */}
+      {/* Template Editor Modal — full screen */}
       <Modal
         visible={!!templateDraft}
         animationType="slide"
-        transparent={true}
+        transparent={false}
         onRequestClose={() => setTemplateDraft(null)}
       >
-        <Pressable onPress={() => setTemplateDraft(null)} style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.8)' }}>
-          <Pressable onPress={() => {}} className="bg-stone-900 rounded-t-3xl border-t border-stone-800" style={{ maxHeight: '80%' }}>
-              <ScrollView
-                bounces={false}
-                keyboardShouldPersistTaps="handled"
-                contentContainerStyle={{ padding: 24, paddingBottom: 40 }}
-                showsVerticalScrollIndicator={false}
-              >
-            <TouchableOpacity onPress={() => setTemplateDraft(null)} activeOpacity={0.6} className="self-center mb-6 py-2 px-8">
-              <View className="w-12 h-1.5 bg-stone-700 rounded-full" />
-            </TouchableOpacity>
-            <Text className="text-xl font-bold text-white tracking-tight mb-1">
+        <SafeAreaView style={{ flex: 1, backgroundColor: colors.app }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: colors.line }}>
+            <Text style={{ color: colors.ink, fontSize: 22, fontWeight: '700', letterSpacing: -0.5 }}>
               {templateDraft?.id ? "Edit Template" : "New Template"}
             </Text>
-            <Text className="text-stone-400 text-sm mb-5">
+            <TouchableOpacity
+              onPress={() => setTemplateDraft(null)}
+              style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: 'center', justifyContent: 'center' }}
+            >
+              <FontAwesome name="times" size={14} color={colors.muted} />
+            </TouchableOpacity>
+          </View>
+          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
+              <ScrollView
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={{ padding: 24, paddingBottom: 56 }}
+                showsVerticalScrollIndicator={false}
+              >
+            <Text className="text-muted text-sm mb-5">
               Quick log buttons for frequent expenses
             </Text>
 
             <View className="flex-row mb-3">
               <View className="mr-3">
-                <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
+                <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
                   Icon
                 </Text>
-                <View className="bg-black rounded-2xl border border-stone-800 w-16 h-14 items-center justify-center">
+                <View className="bg-app rounded-2xl border border-line w-16 h-14 items-center justify-center">
                   <TextInput
                     value={templateDraft?.icon || ""}
                     onChangeText={(v) =>
@@ -1956,7 +2056,7 @@ export default function Dashboard() {
                 </View>
               </View>
               <View className="flex-1">
-                <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
+                <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
                   Title
                 </Text>
                 <TextInput
@@ -1966,16 +2066,16 @@ export default function Dashboard() {
                   onChangeText={(v) =>
                     setTemplateDraft((d) => d && { ...d, title: v })
                   }
-                  className="bg-black text-white text-sm px-4 py-3.5 rounded-2xl border border-stone-800"
+                  className="bg-app text-ink text-sm px-4 py-3.5 rounded-2xl border border-line"
                 />
               </View>
             </View>
 
-            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
+            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
               Default Amount
             </Text>
-            <View className="flex-row items-center bg-black rounded-2xl px-4 py-3 border border-stone-800 mb-3">
-              <Text className="text-stone-500 text-lg font-semibold mr-3">
+            <View className="flex-row items-center bg-app rounded-2xl px-4 py-3 border border-line mb-3">
+              <Text className="text-muted text-lg font-semibold mr-3">
                 {symbol}
               </Text>
               <TextInput
@@ -1986,11 +2086,11 @@ export default function Dashboard() {
                 onChangeText={(v) =>
                   setTemplateDraft((d) => d && { ...d, amount: v })
                 }
-                className="flex-1 text-white text-lg font-bold"
+                className="flex-1 text-ink text-lg font-bold"
               />
             </View>
 
-            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
+            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
               Category
             </Text>
             <ScrollView
@@ -2006,10 +2106,10 @@ export default function Dashboard() {
                     onPress={() =>
                       setTemplateDraft((d) => d && { ...d, category: cat.name })
                     }
-                    className={`px-3.5 py-2 mr-2 rounded-full border ${templateDraft?.category === cat.name ? "bg-emerald-600 border-emerald-500" : "bg-black border-stone-800"}`}
+                    className={`px-3.5 py-2 mr-2 rounded-full border ${templateDraft?.category === cat.name ? "bg-emerald-600 border-emerald-500" : "bg-app border-line"}`}
                   >
                     <Text
-                      className={`text-xs font-semibold ${templateDraft?.category === cat.name ? "text-white" : "text-stone-400"}`}
+                      className={`text-xs font-semibold ${templateDraft?.category === cat.name ? "text-white" : "text-muted"}`}
                     >
                       {cat.icon} {cat.name}
                     </Text>
@@ -2017,7 +2117,7 @@ export default function Dashboard() {
                 ))}
             </ScrollView>
 
-            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
+            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
               Group
             </Text>
             <View className="flex-row -mx-1 mb-5">
@@ -2027,10 +2127,10 @@ export default function Dashboard() {
                   onPress={() =>
                     setTemplateDraft((d) => d && { ...d, group_name: g })
                   }
-                  className={`flex-1 mx-1 py-2.5 rounded-2xl border items-center ${templateDraft?.group_name === g ? "bg-emerald-600 border-emerald-500" : "bg-black border-stone-800"}`}
+                  className={`flex-1 mx-1 py-2.5 rounded-2xl border items-center ${templateDraft?.group_name === g ? "bg-emerald-600 border-emerald-500" : "bg-app border-line"}`}
                 >
                   <Text
-                    className={`text-[11px] font-semibold uppercase tracking-wider ${templateDraft?.group_name === g ? "text-white" : "text-stone-400"}`}
+                    className={`text-[11px] font-semibold uppercase tracking-wider ${templateDraft?.group_name === g ? "text-white" : "text-muted"}`}
                   >
                     {g}
                   </Text>
@@ -2049,9 +2149,9 @@ export default function Dashboard() {
               )}
               <TouchableOpacity
                 onPress={() => setTemplateDraft(null)}
-                className="flex-1 py-4 rounded-2xl bg-stone-800 items-center"
+                className="flex-1 py-4 rounded-2xl bg-elevated items-center"
               >
-                <Text className="text-white text-sm font-semibold uppercase tracking-wider">
+                <Text className="text-ink text-sm font-semibold uppercase tracking-wider">
                   Cancel
                 </Text>
               </TouchableOpacity>
@@ -2065,8 +2165,125 @@ export default function Dashboard() {
               </TouchableOpacity>
             </View>
               </ScrollView>
-          </Pressable>
-        </Pressable>
+          </KeyboardAvoidingView>
+        </SafeAreaView>
+      </Modal>
+
+      {/* Month-end Rollover Prompt — start a new budget period (#4) */}
+      <Modal
+        visible={showRolloverModal}
+        animationType="slide"
+        transparent={false}
+        onRequestClose={() => {}}
+      >
+        <SafeAreaView style={{ flex: 1, backgroundColor: colors.app }}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : undefined}
+            style={{ flex: 1 }}
+          >
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{ padding: 24, paddingBottom: 56 }}
+              showsVerticalScrollIndicator={false}
+            >
+              <View className="items-center mb-6 mt-4">
+                <View className="w-16 h-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 items-center justify-center mb-4">
+                  <FontAwesome name="refresh" size={24} color="#34d399" />
+                </View>
+                <Text className="text-2xl font-bold text-ink tracking-tight text-center">
+                  New Budget Period
+                </Text>
+                <Text className="text-muted text-sm text-center mt-2">
+                  Your previous budget period ended.
+                </Text>
+              </View>
+
+              {/* Saved-to-savings summary */}
+              <View className="bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-4 mb-6 flex-row items-center">
+                <View className="w-10 h-10 rounded-xl bg-emerald-500/15 items-center justify-center mr-3">
+                  <FontAwesome name="bank" size={15} color="#34d399" />
+                </View>
+                <View className="flex-1">
+                  <Text className="text-emerald-400 text-base font-bold tracking-tight">
+                    {format(rolloverAmount)} saved
+                  </Text>
+                  <Text className="text-muted text-xs mt-0.5">
+                    Last period's leftover moved to your savings vault
+                  </Text>
+                </View>
+              </View>
+
+              <Text className="text-emerald-400 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
+                New Monthly Budget
+              </Text>
+              <View className="bg-app rounded-2xl p-4 border border-line mb-5 flex-row items-center">
+                <Text className="text-muted text-lg font-semibold mr-3">{symbol}</Text>
+                <TextInput
+                  className="flex-1 text-ink text-xl font-bold tracking-tight"
+                  keyboardType="numeric"
+                  placeholder="0"
+                  placeholderTextColor="#78716c"
+                  value={rbBudget}
+                  onChangeText={setRbBudget}
+                />
+              </View>
+
+              <Text className="text-emerald-400 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
+                New End Date
+              </Text>
+              <Text className="text-muted text-xs mb-3 ml-1">
+                Leftover moves to savings again after this date
+              </Text>
+              <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Month</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-3">
+                {monthNames.map((m, idx) => (
+                  <TouchableOpacity
+                    key={m}
+                    onPress={() => {
+                      setRbExpMonth(idx);
+                      const maxDay = new Date(today.getFullYear(), idx + 1, 0).getDate();
+                      if (rbExpDay > maxDay) setRbExpDay(maxDay);
+                    }}
+                    className={`px-3.5 py-2 mr-2 rounded-full border ${rbExpMonth === idx ? "bg-emerald-600 border-emerald-500" : "bg-app border-line"}`}
+                  >
+                    <Text className={`text-xs font-semibold uppercase tracking-wider ${rbExpMonth === idx ? "text-white" : "text-muted"}`}>
+                      {m}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Day</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-6">
+                {Array.from(
+                  { length: new Date(today.getFullYear(), rbExpMonth + 1, 0).getDate() },
+                  (_, i) => i + 1,
+                ).map((d) => (
+                  <TouchableOpacity
+                    key={d}
+                    onPress={() => setRbExpDay(d)}
+                    className={`w-10 h-10 mr-1.5 rounded-full items-center justify-center border ${rbExpDay === d ? "bg-emerald-600 border-emerald-500" : "bg-app border-line"}`}
+                  >
+                    <Text className={`text-xs font-semibold ${rbExpDay === d ? "text-white" : "text-muted"}`}>{d}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+
+              <TouchableOpacity
+                onPress={handleRolloverSubmit}
+                disabled={rbSaving}
+                className="py-4 rounded-2xl bg-emerald-600 items-center active:bg-emerald-500"
+              >
+                {rbSaving ? (
+                  <ActivityIndicator color="white" />
+                ) : (
+                  <Text className="text-white text-sm font-bold uppercase tracking-wider">
+                    Start New Period
+                  </Text>
+                )}
+              </TouchableOpacity>
+            </ScrollView>
+          </KeyboardAvoidingView>
+        </SafeAreaView>
       </Modal>
     </SafeAreaView>
   );

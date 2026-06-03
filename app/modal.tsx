@@ -3,6 +3,7 @@ import { Platform, View, Text, ScrollView, TouchableOpacity, StatusBar as RNStat
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
+import { useTheme } from '@/components/ThemeProvider';
 
 type TipRow = { icon: string; text: string };
 
@@ -18,18 +19,18 @@ function GuideCard({
   tips?: TipRow[];
 }) {
   return (
-    <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-3">
+    <View className="bg-surface border border-line rounded-3xl p-5 mb-3">
       <View className="flex-row items-center mb-3">
         <View className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 items-center justify-center mr-3">
           <Text style={{ fontSize: 16 }}>{emoji}</Text>
         </View>
-        <Text className="text-white text-base font-bold tracking-tight flex-1" numberOfLines={1}>
+        <Text className="text-ink text-base font-bold tracking-tight flex-1" numberOfLines={1}>
           {title}
         </Text>
       </View>
-      <Text className="text-stone-400 text-sm leading-relaxed">{body}</Text>
+      <Text className="text-muted text-sm leading-relaxed">{body}</Text>
       {tips && tips.length > 0 && (
-        <View className="mt-3 pt-3 border-t border-stone-800">
+        <View className="mt-3 pt-3 border-t border-line">
           {tips.map((t, idx) => (
             <View
               key={idx}
@@ -37,7 +38,7 @@ function GuideCard({
               style={{ marginBottom: idx === tips.length - 1 ? 0 : 6 }}
             >
               <Text className="text-emerald-400 text-xs mr-2 mt-0.5">{t.icon}</Text>
-              <Text className="text-stone-400 text-xs leading-relaxed flex-1">{t.text}</Text>
+              <Text className="text-muted text-xs leading-relaxed flex-1">{t.text}</Text>
             </View>
           ))}
         </View>
@@ -48,6 +49,7 @@ function GuideCard({
 
 export default function ModalScreen() {
   const router = useRouter();
+  const { colors, isDark } = useTheme();
   const insets = useSafeAreaInsets();
   const topPad = insets.top || (Platform.OS === 'android' ? RNStatusBar.currentHeight ?? 0 : 0);
 
@@ -60,21 +62,21 @@ export default function ModalScreen() {
   ];
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#000' }}>
+    <View style={{ flex: 1, backgroundColor: colors.app }}>
       <ScrollView
-        style={{ flex: 1, backgroundColor: '#000' }}
+        style={{ flex: 1, backgroundColor: colors.app }}
         contentContainerStyle={{ paddingTop: topPad + 4, paddingHorizontal: 24, paddingBottom: 0 }}
         showsVerticalScrollIndicator={false}
       >
         <View className="flex-row items-center mb-5 mt-1">
           <TouchableOpacity
             onPress={() => router.back()}
-            className="w-11 h-11 bg-stone-900 border border-stone-800 rounded-full items-center justify-center active:bg-stone-800 mr-3"
+            className="w-11 h-11 bg-surface border border-line rounded-full items-center justify-center active:bg-elevated mr-3"
           >
             <FontAwesome name="chevron-left" size={14} color="#34d399" />
           </TouchableOpacity>
           <View className="flex-1">
-            <Text className="text-3xl font-bold text-white tracking-tight">App Guide</Text>
+            <Text className="text-3xl font-bold text-ink tracking-tight">App Guide</Text>
             <Text className="text-emerald-400 mt-1 text-[11px] font-semibold tracking-widest uppercase">
               How Hyper Expense Works
             </Text>
@@ -177,12 +179,12 @@ export default function ModalScreen() {
               style={{ marginBottom: idx === proTips.length - 1 ? 0 : 8 }}
             >
               <Text className="text-emerald-400 text-xs mr-2 mt-0.5">•</Text>
-              <Text className="text-stone-300 text-xs leading-relaxed flex-1">{tip}</Text>
+              <Text className="text-ink text-xs leading-relaxed flex-1">{tip}</Text>
             </View>
           ))}
         </View>
 
-        <StatusBar style={Platform.OS === 'ios' ? 'light' : 'auto'} />
+        <StatusBar style={isDark ? 'light' : 'dark'} />
       </ScrollView>
     </View>
   );

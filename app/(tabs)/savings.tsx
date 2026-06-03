@@ -7,6 +7,7 @@ import { useExpenseSync, INCOME_CATEGORY } from '../../hooks/useExpenseSync';
 import { useLoans, useLoanPayments } from '../../hooks/useLoans';
 import { useAuth } from '../../components/AuthProvider';
 import { useCurrency } from '../../components/CurrencyProvider';
+import { useTheme } from '../../components/ThemeProvider';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, router } from 'expo-router';
 import { supabase } from '../../lib/supabase';
@@ -54,10 +55,10 @@ function SectionTitle({ icon, label, color = '#34d399', right }: { icon: React.C
   return (
     <View className="flex-row items-center justify-between mb-4">
       <View className="flex-row items-center">
-        <View className="w-7 h-7 rounded-lg bg-black border border-stone-800 items-center justify-center mr-3">
+        <View className="w-7 h-7 rounded-lg bg-app border border-line items-center justify-center mr-3">
           <FontAwesome name={icon} size={12} color={color} />
         </View>
-        <Text className="text-white text-sm font-bold tracking-tight">{label}</Text>
+        <Text className="text-ink text-sm font-bold tracking-tight">{label}</Text>
       </View>
       {right}
     </View>
@@ -85,6 +86,7 @@ export default function SavingsScreen() {
   };
   const { showNotification } = useNotification();
   const { format, symbol } = useCurrency();
+  const { colors } = useTheme();
   const { savingsThisMonth, savingsGoal, totalSavings, monthlyBudget } = metrics;
   const savedSources = ((user?.user_metadata?.custom_sources as Array<{name: string}>) || [{ name: 'Cash' }]).map((s: {name: string}) => s.name);
 
@@ -97,7 +99,6 @@ export default function SavingsScreen() {
   const [savingGoal, setSavingGoal] = useState(false);
   const [contributeAmounts, setContributeAmounts] = useState<Record<string, string>>({});
   const didAutoProcess = useRef(false);
-  const didProcessMonthly = useRef(false);
 
   const [dlYear, setDlYear] = useState(new Date().getFullYear());
   const [dlMonth, setDlMonth] = useState(new Date().getMonth());
@@ -166,7 +167,6 @@ export default function SavingsScreen() {
 
   const onRefresh = async () => {
     didAutoProcess.current = false;
-    didProcessMonthly.current = false;
     setRefreshing(true);
     await queryClient.invalidateQueries({ queryKey: ['profile', user?.id] });
     await queryClient.invalidateQueries({ queryKey: ['expenses', user?.id] });
@@ -246,42 +246,11 @@ export default function SavingsScreen() {
     }
   };
 
-  const processMonthlyLeftover = async () => {
-    const now = new Date();
-    const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const prevMonthKey = `${prevMonth.getFullYear()}-${String(prevMonth.getMonth() + 1).padStart(2, '0')}`;
-    const lastProcessed = user?.user_metadata?.last_savings_month as string | undefined;
-    if (lastProcessed === prevMonthKey) return;
-    const startOfPrev = new Date(prevMonth.getFullYear(), prevMonth.getMonth(), 1);
-    const endOfPrev = new Date(prevMonth.getFullYear(), prevMonth.getMonth() + 1, 0, 23, 59, 59, 999);
-    const { data: lastMonthExpenses } = await supabase
-      .from('expenses')
-      .select('amount, category')
-      .eq('user_id', user!.id)
-      .gte('created_at', startOfPrev.toISOString())
-      .lte('created_at', endOfPrev.toISOString());
-    await supabase.auth.updateUser({ data: { last_savings_month: prevMonthKey } });
-    if (!lastMonthExpenses) return;
-    const spent = lastMonthExpenses
-      .filter(e => e.category !== INCOME_CATEGORY)
-      .reduce((sum, e) => sum + Number(e.amount), 0);
-    const leftover = monthlyBudget - spent;
-    if (leftover <= 0) return;
-    const { error } = await supabase
-      .from('profiles')
-      .update({ total_savings: totalSavings + leftover })
-      .eq('id', user!.id);
-    if (!error) {
-      queryClient.invalidateQueries({ queryKey: ['profile', user?.id] });
-      showNotification(`Last month's leftover ${format(leftover)} moved to savings`, 'success');
-    }
-  };
-
-  useEffect(() => {
-    if (didProcessMonthly.current || !user?.id || !profile) return;
-    didProcessMonthly.current = true;
-    processMonthlyLeftover();
-  }, [user?.id, !!profile]);
+  // Month-wise savings history is produced by the Wallet's month-end rollover (#4)
+  // and read here for the "Monthly Savings" card below.
+  const monthlySavings = (((user?.user_metadata?.monthly_savings_history as any[]) || []) as Array<{ key: string; label: string; amount: number; date: string }>)
+    .slice()
+    .sort((a, b) => (a.key < b.key ? 1 : -1));
 
   const goalsKey = initialGoals.map(g => `${g.id}:${g.deadline ?? ''}`).join(',');
   useEffect(() => {
@@ -387,7 +356,7 @@ export default function SavingsScreen() {
   const progressPct = Math.max(0, Math.min(100, (savingsThisMonth / (savingsGoal || 1)) * 100));
 
   return (
-    <SafeAreaView className="flex-1 bg-black">
+    <SafeAreaView className="flex-1 bg-app">
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={{ flex: 1 }}
@@ -401,7 +370,7 @@ export default function SavingsScreen() {
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#34d399" />}
         >
           <View className="mb-6 mt-1">
-            <Text className="text-3xl font-bold text-white tracking-tight">Savings Vault</Text>
+            <Text className="text-3xl font-bold text-ink tracking-tight">Savings Vault</Text>
             <Text className="text-emerald-400 mt-1 text-[11px] font-semibold tracking-widest uppercase">Wealth Builder</Text>
           </View>
 
@@ -411,7 +380,7 @@ export default function SavingsScreen() {
             const totalLent = activeLoans.filter(l => l.type === 'lent').reduce((s, l) => s + l.remaining, 0);
             const totalBorrowed = activeLoans.filter(l => l.type === 'borrowed').reduce((s, l) => s + l.remaining, 0);
             return (
-              <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-5">
+              <View className="bg-surface border border-line rounded-3xl p-5 mb-5">
                 <SectionTitle
                   icon="exchange"
                   label="Lending"
@@ -426,10 +395,10 @@ export default function SavingsScreen() {
                 {loans.length === 0 ? (
                   <View className="py-6 items-center">
                     <View className="w-14 h-14 bg-stone-800/50 rounded-2xl items-center justify-center mb-3">
-                      <FontAwesome name="handshake-o" size={20} color="#52525b" />
+                      <FontAwesome name="handshake-o" size={20} color={colors.faint} />
                     </View>
-                    <Text className="text-stone-400 text-sm font-semibold text-center">No loans tracked</Text>
-                    <Text className="text-stone-600 text-[11px] text-center mt-1.5 uppercase tracking-widest">Track money lent or borrowed</Text>
+                    <Text className="text-muted text-sm font-semibold text-center">No loans tracked</Text>
+                    <Text className="text-faint text-[11px] text-center mt-1.5 uppercase tracking-widest">Track money lent or borrowed</Text>
                   </View>
                 ) : (
                   <TouchableOpacity onPress={() => setShowLoansList(true)} activeOpacity={0.7}>
@@ -447,11 +416,11 @@ export default function SavingsScreen() {
                         </View>
                       ) : null}
                     </View>
-                    <View className="flex-row items-center justify-center py-1.5 bg-black/30 rounded-xl border border-stone-800">
-                      <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mr-2">
+                    <View className="flex-row items-center justify-center py-1.5 bg-black/30 rounded-xl border border-line">
+                      <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mr-2">
                         {activeLoans.length} active · {loans.length - activeLoans.length} settled
                       </Text>
-                      <FontAwesome name="chevron-right" size={9} color="#57534e" />
+                      <FontAwesome name="chevron-right" size={9} color={colors.faint} />
                     </View>
                   </TouchableOpacity>
                 )}
@@ -460,26 +429,64 @@ export default function SavingsScreen() {
           })()}
 
           {/* This month */}
-          <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-5">
+          <View className="bg-surface border border-line rounded-3xl p-5 mb-5">
             <SectionTitle icon="line-chart" label="This Month" />
             <View className="flex-row justify-between items-baseline mb-3">
-              <Text className="text-2xl font-bold text-white tracking-tight">{format(savingsThisMonth)}</Text>
-              <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest">Projected</Text>
+              <Text className="text-2xl font-bold text-ink tracking-tight">{format(savingsThisMonth)}</Text>
+              <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">Projected</Text>
             </View>
-            <View className="h-2.5 bg-black/60 rounded-full overflow-hidden mb-3 border border-stone-800">
+            <View className="h-2.5 bg-black/60 rounded-full overflow-hidden mb-3 border border-line">
               <View className="h-full bg-emerald-500 rounded-full" style={{ width: `${progressPct}%` }} />
             </View>
             <View className="flex-row justify-between">
-              <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest">{Math.round(progressPct)}% of Goal</Text>
-              <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest">Target {format(savingsGoal)}</Text>
+              <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">{Math.round(progressPct)}% of Goal</Text>
+              <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">Target {format(savingsGoal)}</Text>
             </View>
           </View>
 
+          {/* Monthly Savings — month-wise rollover history (#4) */}
+          <View className="bg-surface border border-line rounded-3xl p-5 mb-5">
+            <SectionTitle icon="archive" label="Monthly Savings" color="#a78bfa" />
+            <View className="flex-row justify-between items-baseline mb-4">
+              <Text className="text-2xl font-bold text-ink tracking-tight">{format(totalSavings)}</Text>
+              <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">Total Vault</Text>
+            </View>
+            {monthlySavings.length === 0 ? (
+              <View className="py-5 items-center">
+                <View className="w-14 h-14 bg-stone-800/50 rounded-2xl items-center justify-center mb-3">
+                  <FontAwesome name="calendar-o" size={18} color="#52525b" />
+                </View>
+                <Text className="text-muted text-sm font-semibold text-center">No monthly savings yet</Text>
+                <Text className="text-faint text-[11px] text-center mt-1.5 uppercase tracking-widest">Leftover lands here when a budget period ends</Text>
+              </View>
+            ) : (
+              monthlySavings.map((m, idx) => (
+                <View
+                  key={m.key}
+                  className={`flex-row items-center justify-between py-3 ${idx === monthlySavings.length - 1 ? '' : 'border-b border-line'}`}
+                >
+                  <View className="flex-row items-center flex-1">
+                    <View className="w-9 h-9 rounded-xl bg-emerald-500/10 items-center justify-center mr-3">
+                      <FontAwesome name="bank" size={13} color="#34d399" />
+                    </View>
+                    <View className="flex-1">
+                      <Text className="text-ink text-sm font-semibold">{m.label}</Text>
+                      <Text className="text-faint text-[10px] uppercase tracking-wider mt-0.5">
+                        {new Date(m.date).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
+                      </Text>
+                    </View>
+                  </View>
+                  <Text className="text-emerald-400 text-sm font-bold">+ {format(m.amount)}</Text>
+                </View>
+              ))
+            )}
+          </View>
+
           {/* Monthly goal setter */}
-          <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-5">
+          <View className="bg-surface border border-line rounded-3xl p-5 mb-5">
             <SectionTitle icon="flag" label="Monthly Goal" />
-            <View className="flex-row items-center bg-black rounded-2xl px-4 py-3 border border-stone-800 mb-4">
-              <Text className="text-stone-500 text-sm font-semibold mr-3">{symbol}</Text>
+            <View className="flex-row items-center bg-app rounded-2xl px-4 py-3 border border-line mb-4">
+              <Text className="text-muted text-sm font-semibold mr-3">{symbol}</Text>
               <TextInput
                 className="flex-1 text-emerald-400 text-sm font-bold tracking-tight"
                 keyboardType="numeric"
@@ -496,7 +503,7 @@ export default function SavingsScreen() {
           </View>
 
           {/* Saving Goals */}
-          <View className="bg-stone-900 border border-stone-800 rounded-3xl p-5 mb-5">
+          <View className="bg-surface border border-line rounded-3xl p-5 mb-5">
             <SectionTitle
               icon="star"
               label="Saving Goals"
@@ -510,10 +517,10 @@ export default function SavingsScreen() {
             {initialGoals.length === 0 ? (
               <View className="py-6 items-center">
                 <View className="w-14 h-14 bg-stone-800/50 rounded-2xl items-center justify-center mb-3">
-                  <FontAwesome name="star-o" size={20} color="#52525b" />
+                  <FontAwesome name="star-o" size={20} color={colors.faint} />
                 </View>
-                <Text className="text-stone-400 text-sm font-semibold text-center">No goals yet</Text>
-                <Text className="text-stone-600 text-[11px] text-center mt-1.5 uppercase tracking-widest">Add a target like New Laptop or Trip</Text>
+                <Text className="text-muted text-sm font-semibold text-center">No goals yet</Text>
+                <Text className="text-faint text-[11px] text-center mt-1.5 uppercase tracking-widest">Add a target like New Laptop or Trip</Text>
               </View>
             ) : (
               initialGoals.map(g => {
@@ -524,35 +531,35 @@ export default function SavingsScreen() {
                   <TouchableOpacity
                     key={g.id}
                     onPress={() => setGoalDraft({ id: g.id, name: g.name, target: g.target.toString(), current: g.current.toString(), deadline: g.deadline || '' })}
-                    className="bg-black/40 border border-stone-800 rounded-2xl p-4 mb-2 active:bg-stone-800/40"
+                    className="bg-black/40 border border-line rounded-2xl p-4 mb-2 active:bg-stone-800/40"
                   >
                     <View className="flex-row justify-between items-center mb-2">
                       <View className="flex-row items-center flex-1 mr-2">
-                        <Text className="text-white text-sm font-semibold" numberOfLines={1}>{g.name}</Text>
+                        <Text className="text-ink text-sm font-semibold" numberOfLines={1}>{g.name}</Text>
                         {done && <Text className="text-emerald-400 text-xs ml-2">✓</Text>}
                       </View>
-                      <Text className="text-stone-300 text-sm font-bold">{format(g.current)} / {format(g.target)}</Text>
+                      <Text className="text-ink text-sm font-bold">{format(g.current)} / {format(g.target)}</Text>
                     </View>
-                    <View className="h-2 bg-black rounded-full overflow-hidden mb-3">
+                    <View className="h-2 bg-app rounded-full overflow-hidden mb-3">
                       <View className={`h-full rounded-full ${done ? 'bg-emerald-400' : 'bg-emerald-500'}`} style={{ width: `${pct}%` }} />
                     </View>
                     <View className="flex-row justify-between items-center">
-                      <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest flex-1 mr-3">
+                      <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest flex-1 mr-3">
                         {Math.round(pct)}%{deadline ? ` · By ${deadline.toLocaleDateString([], { month: 'short', day: 'numeric' })}` : ''}
                       </Text>
-                      <View className="flex-row items-center bg-stone-900 border border-stone-800 rounded-xl px-2 py-1.5">
+                      <View className="flex-row items-center bg-surface border border-line rounded-xl px-2 py-1.5">
                         <TouchableOpacity
                           onPress={() => handleContribute(g.id, -Number(contributeAmounts[g.id] || 100))}
-                          className="w-6 h-6 rounded-lg bg-stone-800 items-center justify-center"
+                          className="w-6 h-6 rounded-lg bg-elevated items-center justify-center"
                         >
-                          <FontAwesome name="minus" size={8} color="#a8a29e" />
+                          <FontAwesome name="minus" size={8} color={colors.muted} />
                         </TouchableOpacity>
                         <TextInput
                           value={contributeAmounts[g.id] ?? '100'}
                           onChangeText={v => setContributeAmounts(prev => ({ ...prev, [g.id]: v.replace(/[^0-9]/g, '') }))}
                           keyboardType="numeric"
                           style={{ width: 44 }}
-                          className="text-white text-xs text-center mx-1.5 py-0"
+                          className="text-ink text-xs text-center mx-1.5 py-0"
                         />
                         <TouchableOpacity
                           onPress={() => handleContribute(g.id, Number(contributeAmounts[g.id] || 100))}
@@ -567,7 +574,7 @@ export default function SavingsScreen() {
               })
             )}
             {initialGoals.length > 0 && (
-              <Text className="text-stone-600 text-[10px] text-center mt-2 uppercase tracking-widest">Tap goal to edit · Enter amount then +/−</Text>
+              <Text className="text-faint text-[10px] text-center mt-2 uppercase tracking-widest">Tap goal to edit · Enter amount then +/−</Text>
             )}
           </View>
 
@@ -577,7 +584,7 @@ export default function SavingsScreen() {
       {/* Goal Editor Modal */}
       <Modal visible={!!goalDraft} animationType="slide" transparent={true} onRequestClose={() => setGoalDraft(null)}>
         <Pressable onPress={() => setGoalDraft(null)} style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.8)' }}>
-          <Pressable onPress={() => {}} className="bg-stone-900 rounded-t-3xl border-t border-stone-800" style={{ maxHeight: '75%' }}>
+          <Pressable onPress={() => {}} className="bg-surface rounded-t-3xl border-t border-line" style={{ maxHeight: '75%' }}>
             <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
               <ScrollView
                 bounces={false}
@@ -586,59 +593,59 @@ export default function SavingsScreen() {
                 showsVerticalScrollIndicator={false}
               >
             <TouchableOpacity onPress={() => setGoalDraft(null)} activeOpacity={0.6} className="self-center mb-6 py-2 px-8">
-              <View className="w-12 h-1.5 bg-stone-700 rounded-full" />
+              <View className="w-12 h-1.5 bg-faint rounded-full" />
             </TouchableOpacity>
-            <Text className="text-base font-bold text-white tracking-tight mb-1">{goalDraft?.id ? 'Edit Goal' : 'New Goal'}</Text>
-            <Text className="text-stone-400 text-sm mb-5">Track progress toward a specific target</Text>
+            <Text className="text-base font-bold text-ink tracking-tight mb-1">{goalDraft?.id ? 'Edit Goal' : 'New Goal'}</Text>
+            <Text className="text-muted text-sm mb-5">Track progress toward a specific target</Text>
 
-            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Name</Text>
+            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Name</Text>
             <TextInput
               placeholder="e.g. New Laptop"
-              placeholderTextColor="#78716c"
+              placeholderTextColor={colors.muted}
               value={goalDraft?.name || ''}
               onChangeText={v => setGoalDraft(d => d && { ...d, name: v })}
-              className="bg-black text-white text-sm px-4 py-3.5 rounded-2xl border border-stone-800 mb-3"
+              className="bg-app text-ink text-sm px-4 py-3.5 rounded-2xl border border-line mb-3"
             />
 
-            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Target Amount</Text>
-            <View className="flex-row items-center bg-black rounded-2xl px-4 py-3 border border-stone-800 mb-3">
-              <Text className="text-stone-500 text-sm font-semibold mr-3">{symbol}</Text>
+            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Target Amount</Text>
+            <View className="flex-row items-center bg-app rounded-2xl px-4 py-3 border border-line mb-3">
+              <Text className="text-muted text-sm font-semibold mr-3">{symbol}</Text>
               <TextInput
                 placeholder="0"
-                placeholderTextColor="#78716c"
+                placeholderTextColor={colors.muted}
                 keyboardType="numeric"
                 value={goalDraft?.target || ''}
                 onChangeText={v => setGoalDraft(d => d && { ...d, target: v })}
-                className="flex-1 text-white text-sm font-bold"
+                className="flex-1 text-ink text-sm font-bold"
               />
             </View>
 
-            <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Current Saved</Text>
-            <View className="flex-row items-center bg-black rounded-2xl px-4 py-3 border border-stone-800 mb-3">
-              <Text className="text-stone-500 text-sm font-semibold mr-3">{symbol}</Text>
+            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Current Saved</Text>
+            <View className="flex-row items-center bg-app rounded-2xl px-4 py-3 border border-line mb-3">
+              <Text className="text-muted text-sm font-semibold mr-3">{symbol}</Text>
               <TextInput
                 placeholder="0"
-                placeholderTextColor="#78716c"
+                placeholderTextColor={colors.muted}
                 keyboardType="numeric"
                 value={goalDraft?.current || ''}
                 onChangeText={v => setGoalDraft(d => d && { ...d, current: v })}
-                className="flex-1 text-white text-sm font-bold"
+                className="flex-1 text-ink text-sm font-bold"
               />
             </View>
 
             <View className="flex-row items-center justify-between mb-3">
-              <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest ml-1">Set Deadline</Text>
+              <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest ml-1">Set Deadline</Text>
               <Switch
                 value={hasDeadline}
                 onValueChange={setHasDeadline}
-                trackColor={{ false: '#292524', true: '#059669' }}
-                thumbColor={hasDeadline ? '#34d399' : '#78716c'}
+                trackColor={{ false: colors.line, true: '#059669' }}
+                thumbColor={hasDeadline ? '#34d399' : colors.muted}
               />
             </View>
 
             {hasDeadline && (
               <>
-                <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Month</Text>
+                <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Month</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-3">
                   {monthNames.map((m, idx) => (
                     <TouchableOpacity
@@ -648,21 +655,21 @@ export default function SavingsScreen() {
                         const maxDay = new Date(dlYear, idx + 1, 0).getDate();
                         if (dlDay > maxDay) setDlDay(maxDay);
                       }}
-                      className={`px-3.5 py-2 mr-2 rounded-full border ${dlMonth === idx ? 'bg-emerald-600 border-emerald-500' : 'bg-black border-stone-800'}`}
+                      className={`px-3.5 py-2 mr-2 rounded-full border ${dlMonth === idx ? 'bg-emerald-600 border-emerald-500' : 'bg-app border-line'}`}
                     >
-                      <Text className={`text-xs font-semibold uppercase tracking-wider ${dlMonth === idx ? 'text-white' : 'text-stone-500'}`}>{m}</Text>
+                      <Text className={`text-xs font-semibold uppercase tracking-wider ${dlMonth === idx ? 'text-white' : 'text-muted'}`}>{m}</Text>
                     </TouchableOpacity>
                   ))}
                 </ScrollView>
-                <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Day</Text>
+                <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Day</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-5">
                   {Array.from({ length: new Date(dlYear, dlMonth + 1, 0).getDate() }, (_, i) => i + 1).map(d => (
                     <TouchableOpacity
                       key={d}
                       onPress={() => setDlDay(d)}
-                      className={`w-10 h-10 mr-1.5 rounded-full items-center justify-center border ${dlDay === d ? 'bg-emerald-600 border-emerald-500' : 'bg-black border-stone-800'}`}
+                      className={`w-10 h-10 mr-1.5 rounded-full items-center justify-center border ${dlDay === d ? 'bg-emerald-600 border-emerald-500' : 'bg-app border-line'}`}
                     >
-                      <Text className={`text-xs font-semibold ${dlDay === d ? 'text-white' : 'text-stone-500'}`}>{d}</Text>
+                      <Text className={`text-xs font-semibold ${dlDay === d ? 'text-white' : 'text-muted'}`}>{d}</Text>
                     </TouchableOpacity>
                   ))}
                 </ScrollView>
@@ -677,8 +684,8 @@ export default function SavingsScreen() {
                   <FontAwesome name="trash" size={14} color="#f43f5e" />
                 </TouchableOpacity>
               )}
-              <TouchableOpacity onPress={() => setGoalDraft(null)} className="flex-1 py-4 rounded-2xl bg-stone-800 items-center">
-                <Text className="text-white text-sm font-semibold uppercase tracking-wider">Cancel</Text>
+              <TouchableOpacity onPress={() => setGoalDraft(null)} className="flex-1 py-4 rounded-2xl bg-elevated items-center">
+                <Text className="text-ink text-sm font-semibold uppercase tracking-wider">Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity onPress={handleSaveGoalDraft} disabled={savingGoal} className="flex-1 py-4 rounded-2xl bg-emerald-600 items-center">
                 {savingGoal ? <ActivityIndicator color="white" /> : <Text className="text-white text-sm font-bold uppercase tracking-wider">{goalDraft?.id ? 'Update' : 'Add'}</Text>}
@@ -692,9 +699,9 @@ export default function SavingsScreen() {
 
       {/* Loans List Modal */}
       <Modal visible={showLoansList} animationType="slide" transparent={false} onRequestClose={() => setShowLoansList(false)}>
-        <SafeAreaView style={{ flex: 1, backgroundColor: '#000' }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#292524' }}>
-            <Text style={{ color: '#fff', fontSize: 22, fontWeight: '700', letterSpacing: -0.5 }}>Loans</Text>
+        <SafeAreaView style={{ flex: 1, backgroundColor: colors.app }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: colors.line }}>
+            <Text style={{ color: colors.ink, fontSize: 22, fontWeight: '700', letterSpacing: -0.5 }}>Loans</Text>
             <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
               <TouchableOpacity
                 onPress={() => setLoanDraft(EMPTY_LOAN_DRAFT)}
@@ -704,17 +711,17 @@ export default function SavingsScreen() {
               </TouchableOpacity>
               <TouchableOpacity
                 onPress={() => setShowLoansList(false)}
-                style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#1c1917', borderWidth: 1, borderColor: '#292524', alignItems: 'center', justifyContent: 'center' }}
+                style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: 'center', justifyContent: 'center' }}
               >
-                <FontAwesome name="times" size={14} color="#a8a29e" />
+                <FontAwesome name="times" size={14} color={colors.muted} />
               </TouchableOpacity>
             </View>
           </View>
           <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 20, paddingBottom: 48 }} showsVerticalScrollIndicator={false}>
             {loans.length === 0 ? (
               <View style={{ paddingVertical: 48, alignItems: 'center' }}>
-                <FontAwesome name="handshake-o" size={28} color="#52525b" />
-                <Text style={{ color: '#78716c', fontSize: 14, fontWeight: '600', marginTop: 12 }}>No loans yet</Text>
+                <FontAwesome name="handshake-o" size={28} color={colors.faint} />
+                <Text style={{ color: colors.muted, fontSize: 14, fontWeight: '600', marginTop: 12 }}>No loans yet</Text>
               </View>
             ) : (
               loans.map(loan => {
@@ -725,68 +732,68 @@ export default function SavingsScreen() {
                 const overdue = loan.is_overdue;
                 const settled = loan.is_settled;
                 return (
-                  <View key={loan.id} style={{ backgroundColor: settled ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.4)', borderWidth: 1, borderColor: settled ? '#292524' : '#292524', borderRadius: 20, padding: 16, marginBottom: 12, opacity: settled ? 0.55 : 1 }}>
+                  <View key={loan.id} style={{ backgroundColor: settled ? colors.elevated : colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 20, padding: 16, marginBottom: 12, opacity: settled ? 0.55 : 1 }}>
                     <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 8 }}>
                       <View style={{ flex: 1, marginRight: 12 }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 }}>
                           <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: isLent ? '#34d399' : '#f43f5e' }} />
-                          <Text style={{ color: '#fff', fontSize: 14, fontWeight: '700' }}>{loan.person}</Text>
+                          <Text style={{ color: colors.ink, fontSize: 14, fontWeight: '700' }}>{loan.person}</Text>
                           {overdue && !settled && (
                             <View style={{ backgroundColor: 'rgba(244,63,94,0.2)', borderWidth: 1, borderColor: 'rgba(244,63,94,0.3)', borderRadius: 10, paddingHorizontal: 6, paddingVertical: 2 }}>
                               <Text style={{ color: '#f43f5e', fontSize: 9, fontWeight: '700', textTransform: 'uppercase' }}>Overdue</Text>
                             </View>
                           )}
                           {settled && (
-                            <View style={{ backgroundColor: '#292524', borderWidth: 1, borderColor: '#44403c', borderRadius: 10, paddingHorizontal: 6, paddingVertical: 2 }}>
-                              <Text style={{ color: '#78716c', fontSize: 9, fontWeight: '600', textTransform: 'uppercase' }}>Settled</Text>
+                            <View style={{ backgroundColor: colors.line, borderWidth: 1, borderColor: colors.faint, borderRadius: 10, paddingHorizontal: 6, paddingVertical: 2 }}>
+                              <Text style={{ color: colors.muted, fontSize: 9, fontWeight: '600', textTransform: 'uppercase' }}>Settled</Text>
                             </View>
                           )}
                         </View>
-                        <Text style={{ color: '#78716c', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                        <Text style={{ color: colors.muted, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>
                           {isLent ? 'Lent to' : 'Borrowed from'} · {dueDate ? `Due ${dueDate.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}` : 'No due date'}
                         </Text>
-                        {loan.description ? <Text style={{ color: '#57534e', fontSize: 10, marginTop: 2 }} numberOfLines={1}>{loan.description}</Text> : null}
-                        {loan.source ? <Text style={{ color: '#44403c', fontSize: 10, marginTop: 1 }}>{loan.source}</Text> : null}
+                        {loan.description ? <Text style={{ color: colors.faint, fontSize: 10, marginTop: 2 }} numberOfLines={1}>{loan.description}</Text> : null}
+                        {loan.source ? <Text style={{ color: colors.faint, fontSize: 10, marginTop: 1 }}>{loan.source}</Text> : null}
                       </View>
                       <View style={{ alignItems: 'flex-end' }}>
                         <Text style={{ color: isLent ? '#34d399' : '#f87171', fontSize: 14, fontWeight: '700' }}>{format(remaining)}</Text>
-                        <Text style={{ color: '#57534e', fontSize: 10 }}>of {format(loan.principal)}</Text>
+                        <Text style={{ color: colors.faint, fontSize: 10 }}>of {format(loan.principal)}</Text>
                       </View>
                     </View>
-                    <View style={{ height: 4, backgroundColor: '#1c1917', borderRadius: 2, overflow: 'hidden', marginBottom: 12 }}>
+                    <View style={{ height: 4, backgroundColor: colors.surface, borderRadius: 2, overflow: 'hidden', marginBottom: 12 }}>
                       <View style={{ height: '100%', borderRadius: 2, backgroundColor: isLent ? '#10b981' : '#f43f5e', width: `${pct}%` }} />
                     </View>
                     {settled && (
                       <TouchableOpacity
                         onPress={() => setPaymentsLoanId(loan.id)}
-                        style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 6, backgroundColor: '#1c1917', borderRadius: 10, borderWidth: 1, borderColor: '#292524' }}
+                        style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 6, backgroundColor: colors.surface, borderRadius: 10, borderWidth: 1, borderColor: colors.line }}
                       >
-                        <FontAwesome name="history" size={11} color="#78716c" />
-                        <Text style={{ color: '#a8a29e', fontSize: 11, fontWeight: '600', marginLeft: 6, textTransform: 'uppercase', letterSpacing: 1 }}>View payments</Text>
+                        <FontAwesome name="history" size={11} color={colors.muted} />
+                        <Text style={{ color: colors.muted, fontSize: 11, fontWeight: '600', marginLeft: 6, textTransform: 'uppercase', letterSpacing: 1 }}>View payments</Text>
                       </TouchableOpacity>
                     )}
                     {!settled && (() => {
                       const isProcessing = processingLoanIds.has(loan.id);
                       return (
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                          <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#1c1917', borderWidth: 1, borderColor: '#292524', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8 }}>
-                            <Text style={{ color: '#57534e', fontSize: 12, marginRight: 4 }}>{symbol}</Text>
+                          <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8 }}>
+                            <Text style={{ color: colors.faint, fontSize: 12, marginRight: 4 }}>{symbol}</Text>
                             <TextInput
                               value={partialAmounts[loan.id] ?? ''}
                               onChangeText={v => setPartialAmounts(prev => ({ ...prev, [loan.id]: v.replace(/[^0-9]/g, '') }))}
                               keyboardType="numeric"
                               placeholder="Amount paid"
-                              placeholderTextColor="#57534e"
+                              placeholderTextColor={colors.faint}
                               editable={!isProcessing}
-                              style={{ flex: 1, color: '#fff', fontSize: 12 }}
+                              style={{ flex: 1, color: colors.ink, fontSize: 12 }}
                             />
                           </View>
                           <TouchableOpacity
                             onPress={() => handlePartialPayment(loan.id)}
                             disabled={isProcessing}
-                            style={{ paddingHorizontal: 12, paddingVertical: 8, backgroundColor: '#292524', borderWidth: 1, borderColor: '#44403c', borderRadius: 12, opacity: isProcessing ? 0.5 : 1, minWidth: 44, alignItems: 'center' }}
+                            style={{ paddingHorizontal: 12, paddingVertical: 8, backgroundColor: colors.line, borderWidth: 1, borderColor: colors.faint, borderRadius: 12, opacity: isProcessing ? 0.5 : 1, minWidth: 44, alignItems: 'center' }}
                           >
-                            {isProcessing ? <ActivityIndicator size="small" color="#d6d3d1" /> : <Text style={{ color: '#d6d3d1', fontSize: 11, fontWeight: '600' }}>Pay</Text>}
+                            {isProcessing ? <ActivityIndicator size="small" color={colors.ink} /> : <Text style={{ color: colors.ink, fontSize: 11, fontWeight: '600' }}>Pay</Text>}
                           </TouchableOpacity>
                           <TouchableOpacity
                             onPress={() => handleSettleLoan(loan.id)}
@@ -798,16 +805,16 @@ export default function SavingsScreen() {
                           <TouchableOpacity
                             onPress={() => setPaymentsLoanId(loan.id)}
                             disabled={isProcessing}
-                            style={{ width: 36, height: 36, alignItems: 'center', justifyContent: 'center', backgroundColor: '#1c1917', borderWidth: 1, borderColor: '#292524', borderRadius: 10, opacity: isProcessing ? 0.5 : 1 }}
+                            style={{ width: 36, height: 36, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 10, opacity: isProcessing ? 0.5 : 1 }}
                           >
-                            <FontAwesome name="history" size={12} color="#78716c" />
+                            <FontAwesome name="history" size={12} color={colors.muted} />
                           </TouchableOpacity>
                           <TouchableOpacity
                             onPress={() => setLoanDraft({ id: loan.id, type: loan.type, person: loan.person, amount: String(loan.principal), paid: String(loan.paid), description: loan.description || '', hasDueDate: !!loan.due_date, dlYear: loan.due_date ? new Date(loan.due_date).getFullYear() : new Date().getFullYear(), dlMonth: loan.due_date ? new Date(loan.due_date).getMonth() : new Date().getMonth(), dlDay: loan.due_date ? new Date(loan.due_date).getDate() : new Date().getDate(), source: loan.source || '' })}
                             disabled={isProcessing}
-                            style={{ width: 36, height: 36, alignItems: 'center', justifyContent: 'center', backgroundColor: '#1c1917', borderWidth: 1, borderColor: '#292524', borderRadius: 10, opacity: isProcessing ? 0.5 : 1 }}
+                            style={{ width: 36, height: 36, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 10, opacity: isProcessing ? 0.5 : 1 }}
                           >
-                            <FontAwesome name="pencil" size={12} color="#78716c" />
+                            <FontAwesome name="pencil" size={12} color={colors.muted} />
                           </TouchableOpacity>
                         </View>
                       );
@@ -822,37 +829,37 @@ export default function SavingsScreen() {
 
       {/* Loan Payments History Modal */}
       <Modal visible={!!paymentsLoanId} animationType="slide" transparent={false} onRequestClose={() => setPaymentsLoanId(null)}>
-        <SafeAreaView style={{ flex: 1, backgroundColor: '#000' }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#292524' }}>
+        <SafeAreaView style={{ flex: 1, backgroundColor: colors.app }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: colors.line }}>
             <View style={{ flex: 1, marginRight: 12 }}>
-              <Text style={{ color: '#fff', fontSize: 22, fontWeight: '700', letterSpacing: -0.5 }}>Payments</Text>
+              <Text style={{ color: colors.ink, fontSize: 22, fontWeight: '700', letterSpacing: -0.5 }}>Payments</Text>
               {paymentsForLoan && (
-                <Text style={{ color: '#78716c', fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1, marginTop: 2 }}>
+                <Text style={{ color: colors.muted, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1, marginTop: 2 }}>
                   {paymentsForLoan.type === 'lent' ? 'Lent to' : 'Borrowed from'} {paymentsForLoan.person}
                 </Text>
               )}
             </View>
             <TouchableOpacity
               onPress={() => setPaymentsLoanId(null)}
-              style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#1c1917', borderWidth: 1, borderColor: '#292524', alignItems: 'center', justifyContent: 'center' }}
+              style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: 'center', justifyContent: 'center' }}
             >
-              <FontAwesome name="times" size={14} color="#a8a29e" />
+              <FontAwesome name="times" size={14} color={colors.muted} />
             </TouchableOpacity>
           </View>
 
           {paymentsForLoan && (
-            <View style={{ flexDirection: 'row', paddingHorizontal: 24, paddingVertical: 16, gap: 12, borderBottomWidth: 1, borderBottomColor: '#1c1917' }}>
-              <View style={{ flex: 1, backgroundColor: '#0c0a09', borderWidth: 1, borderColor: '#292524', borderRadius: 14, padding: 12 }}>
-                <Text style={{ color: '#57534e', fontSize: 9, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>Principal</Text>
-                <Text style={{ color: '#fff', fontSize: 14, fontWeight: '700' }}>{format(paymentsForLoan.principal)}</Text>
+            <View style={{ flexDirection: 'row', paddingHorizontal: 24, paddingVertical: 16, gap: 12, borderBottomWidth: 1, borderBottomColor: colors.surface }}>
+              <View style={{ flex: 1, backgroundColor: colors.elevated, borderWidth: 1, borderColor: colors.line, borderRadius: 14, padding: 12 }}>
+                <Text style={{ color: colors.faint, fontSize: 9, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>Principal</Text>
+                <Text style={{ color: colors.ink, fontSize: 14, fontWeight: '700' }}>{format(paymentsForLoan.principal)}</Text>
               </View>
-              <View style={{ flex: 1, backgroundColor: '#0c0a09', borderWidth: 1, borderColor: '#292524', borderRadius: 14, padding: 12 }}>
-                <Text style={{ color: '#57534e', fontSize: 9, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>Paid</Text>
+              <View style={{ flex: 1, backgroundColor: colors.elevated, borderWidth: 1, borderColor: colors.line, borderRadius: 14, padding: 12 }}>
+                <Text style={{ color: colors.faint, fontSize: 9, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>Paid</Text>
                 <Text style={{ color: '#34d399', fontSize: 14, fontWeight: '700' }}>{format(paymentsForLoan.paid)}</Text>
               </View>
-              <View style={{ flex: 1, backgroundColor: '#0c0a09', borderWidth: 1, borderColor: '#292524', borderRadius: 14, padding: 12 }}>
-                <Text style={{ color: '#57534e', fontSize: 9, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>Remaining</Text>
-                <Text style={{ color: paymentsForLoan.remaining > 0 ? '#f87171' : '#78716c', fontSize: 14, fontWeight: '700' }}>{format(paymentsForLoan.remaining)}</Text>
+              <View style={{ flex: 1, backgroundColor: colors.elevated, borderWidth: 1, borderColor: colors.line, borderRadius: 14, padding: 12 }}>
+                <Text style={{ color: colors.faint, fontSize: 9, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>Remaining</Text>
+                <Text style={{ color: paymentsForLoan.remaining > 0 ? '#f87171' : colors.muted, fontSize: 14, fontWeight: '700' }}>{format(paymentsForLoan.remaining)}</Text>
               </View>
             </View>
           )}
@@ -864,21 +871,21 @@ export default function SavingsScreen() {
               </View>
             ) : loanPayments.length === 0 ? (
               <View style={{ paddingVertical: 48, alignItems: 'center' }}>
-                <FontAwesome name="clock-o" size={28} color="#52525b" />
-                <Text style={{ color: '#78716c', fontSize: 14, fontWeight: '600', marginTop: 12 }}>No payments yet</Text>
-                <Text style={{ color: '#52525b', fontSize: 11, marginTop: 4, textTransform: 'uppercase', letterSpacing: 1 }}>Use Pay or Settle on the loan</Text>
+                <FontAwesome name="clock-o" size={28} color={colors.faint} />
+                <Text style={{ color: colors.muted, fontSize: 14, fontWeight: '600', marginTop: 12 }}>No payments yet</Text>
+                <Text style={{ color: colors.faint, fontSize: 11, marginTop: 4, textTransform: 'uppercase', letterSpacing: 1 }}>Use Pay or Settle on the loan</Text>
               </View>
             ) : (
               loanPayments.map(p => {
                 const d = new Date(p.paid_at);
                 return (
-                  <View key={p.id} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#0c0a09', borderWidth: 1, borderColor: '#1c1917', borderRadius: 14, padding: 14, marginBottom: 10 }}>
+                  <View key={p.id} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: colors.elevated, borderWidth: 1, borderColor: colors.surface, borderRadius: 14, padding: 14, marginBottom: 10 }}>
                     <View style={{ flex: 1, marginRight: 12 }}>
-                      <Text style={{ color: '#fff', fontSize: 14, fontWeight: '700' }}>{format(p.amount)}</Text>
-                      <Text style={{ color: '#78716c', fontSize: 10, marginTop: 2, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                      <Text style={{ color: colors.ink, fontSize: 14, fontWeight: '700' }}>{format(p.amount)}</Text>
+                      <Text style={{ color: colors.muted, fontSize: 10, marginTop: 2, textTransform: 'uppercase', letterSpacing: 0.5 }}>
                         {d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })} · {d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </Text>
-                      {p.note ? <Text style={{ color: '#57534e', fontSize: 10, marginTop: 2 }} numberOfLines={1}>{p.note}</Text> : null}
+                      {p.note ? <Text style={{ color: colors.faint, fontSize: 10, marginTop: 2 }} numberOfLines={1}>{p.note}</Text> : null}
                     </View>
                     <TouchableOpacity
                       onPress={async () => {
@@ -903,28 +910,28 @@ export default function SavingsScreen() {
 
       {/* Loan Editor Modal */}
       <Modal visible={!!loanDraft} animationType="slide" transparent={false} onRequestClose={() => setLoanDraft(null)}>
-        <SafeAreaView style={{ flex: 1, backgroundColor: '#000' }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#292524' }}>
-            <Text style={{ color: '#fff', fontSize: 22, fontWeight: '700', letterSpacing: -0.5 }}>
+        <SafeAreaView style={{ flex: 1, backgroundColor: colors.app }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: colors.line }}>
+            <Text style={{ color: colors.ink, fontSize: 22, fontWeight: '700', letterSpacing: -0.5 }}>
               {loanDraft?.id ? 'Edit Loan' : 'New Loan'}
             </Text>
             <TouchableOpacity
               onPress={() => setLoanDraft(null)}
-              style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#1c1917', borderWidth: 1, borderColor: '#292524', alignItems: 'center', justifyContent: 'center' }}
+              style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: 'center', justifyContent: 'center' }}
             >
-              <FontAwesome name="times" size={14} color="#a8a29e" />
+              <FontAwesome name="times" size={14} color={colors.muted} />
             </TouchableOpacity>
           </View>
           <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 24, paddingBottom: 56 }} showsVerticalScrollIndicator={false}>
-            <Text style={{ color: '#78716c', fontSize: 13, marginBottom: 20 }}>Track money lent or borrowed</Text>
+            <Text style={{ color: colors.muted, fontSize: 13, marginBottom: 20 }}>Track money lent or borrowed</Text>
 
               {/* Type toggle */}
-              <View className="flex-row bg-black rounded-full p-1 border border-stone-800 mb-4">
+              <View className="flex-row bg-app rounded-full p-1 border border-line mb-4">
                 <TouchableOpacity
                   onPress={() => setLoanDraft(d => d && { ...d, type: 'lent' })}
                   className={`flex-1 py-2.5 rounded-full items-center ${loanDraft?.type === 'lent' ? 'bg-emerald-600' : ''}`}
                 >
-                  <Text className={`text-xs font-bold uppercase tracking-wider ${loanDraft?.type === 'lent' ? 'text-white' : 'text-stone-500'}`}>
+                  <Text className={`text-xs font-bold uppercase tracking-wider ${loanDraft?.type === 'lent' ? 'text-white' : 'text-muted'}`}>
                     I Lent Money
                   </Text>
                 </TouchableOpacity>
@@ -932,73 +939,73 @@ export default function SavingsScreen() {
                   onPress={() => setLoanDraft(d => d && { ...d, type: 'borrowed' })}
                   className={`flex-1 py-2.5 rounded-full items-center ${loanDraft?.type === 'borrowed' ? 'bg-rose-600' : ''}`}
                 >
-                  <Text className={`text-xs font-bold uppercase tracking-wider ${loanDraft?.type === 'borrowed' ? 'text-white' : 'text-stone-500'}`}>
+                  <Text className={`text-xs font-bold uppercase tracking-wider ${loanDraft?.type === 'borrowed' ? 'text-white' : 'text-muted'}`}>
                     I Borrowed
                   </Text>
                 </TouchableOpacity>
               </View>
 
-              <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
+              <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
                 {loanDraft?.type === 'lent' ? 'Lent To' : 'Borrowed From'}
               </Text>
               <TextInput
                 placeholder="Person's name"
-                placeholderTextColor="#78716c"
+                placeholderTextColor={colors.muted}
                 value={loanDraft?.person || ''}
                 onChangeText={v => setLoanDraft(d => d && { ...d, person: v })}
-                className="bg-black text-white text-sm px-4 py-3.5 rounded-2xl border border-stone-800 mb-3"
+                className="bg-app text-ink text-sm px-4 py-3.5 rounded-2xl border border-line mb-3"
               />
 
-              <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Amount</Text>
-              <View className="flex-row items-center bg-black rounded-2xl px-4 py-3 border border-stone-800 mb-3">
-                <Text className="text-stone-500 text-sm font-semibold mr-3">{symbol}</Text>
+              <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Amount</Text>
+              <View className="flex-row items-center bg-app rounded-2xl px-4 py-3 border border-line mb-3">
+                <Text className="text-muted text-sm font-semibold mr-3">{symbol}</Text>
                 <TextInput
                   placeholder="0"
-                  placeholderTextColor="#78716c"
+                  placeholderTextColor={colors.muted}
                   keyboardType="numeric"
                   value={loanDraft?.amount || ''}
                   onChangeText={v => setLoanDraft(d => d && { ...d, amount: v })}
-                  className="flex-1 text-white text-sm font-bold"
+                  className="flex-1 text-ink text-sm font-bold"
                 />
               </View>
 
               {!loanDraft?.id && (
                 <>
-                  <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Already Paid Back</Text>
-                  <View className="flex-row items-center bg-black rounded-2xl px-4 py-3 border border-stone-800 mb-3">
-                    <Text className="text-stone-500 text-sm font-semibold mr-3">{symbol}</Text>
+                  <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Already Paid Back</Text>
+                  <View className="flex-row items-center bg-app rounded-2xl px-4 py-3 border border-line mb-3">
+                    <Text className="text-muted text-sm font-semibold mr-3">{symbol}</Text>
                     <TextInput
                       placeholder="0"
-                      placeholderTextColor="#78716c"
+                      placeholderTextColor={colors.muted}
                       keyboardType="numeric"
                       value={loanDraft?.paid || ''}
                       onChangeText={v => setLoanDraft(d => d && { ...d, paid: v })}
-                      className="flex-1 text-white text-sm font-bold"
+                      className="flex-1 text-ink text-sm font-bold"
                     />
                   </View>
                 </>
               )}
 
-              <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Description (optional)</Text>
+              <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Description (optional)</Text>
               <TextInput
                 placeholder="e.g. Rent share, groceries..."
-                placeholderTextColor="#78716c"
+                placeholderTextColor={colors.muted}
                 value={loanDraft?.description || ''}
                 onChangeText={v => setLoanDraft(d => d && { ...d, description: v })}
-                className="bg-black text-white text-sm px-4 py-3.5 rounded-2xl border border-stone-800 mb-3"
+                className="bg-app text-ink text-sm px-4 py-3.5 rounded-2xl border border-line mb-3"
               />
 
               {savedSources.length > 0 && (
                 <>
-                  <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Source (optional)</Text>
+                  <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Source (optional)</Text>
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-3">
                     {savedSources.map(src => (
                       <TouchableOpacity
                         key={src}
                         onPress={() => setLoanDraft(d => d && { ...d, source: d.source === src ? '' : src })}
-                        className={`px-3.5 py-2 mr-2 rounded-full border ${loanDraft?.source === src ? 'bg-stone-600 border-stone-500' : 'bg-black border-stone-800'}`}
+                        className={`px-3.5 py-2 mr-2 rounded-full border ${loanDraft?.source === src ? 'bg-stone-600 border-stone-500' : 'bg-app border-line'}`}
                       >
-                        <Text className={`text-xs font-semibold uppercase tracking-wider ${loanDraft?.source === src ? 'text-white' : 'text-stone-500'}`}>{src}</Text>
+                        <Text className={`text-xs font-semibold uppercase tracking-wider ${loanDraft?.source === src ? 'text-white' : 'text-muted'}`}>{src}</Text>
                       </TouchableOpacity>
                     ))}
                   </ScrollView>
@@ -1006,37 +1013,37 @@ export default function SavingsScreen() {
               )}
 
               <View className="flex-row items-center justify-between mb-3">
-                <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest ml-1">Set Due Date</Text>
+                <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest ml-1">Set Due Date</Text>
                 <Switch
                   value={loanDraft?.hasDueDate || false}
                   onValueChange={v => setLoanDraft(d => d && { ...d, hasDueDate: v })}
-                  trackColor={{ false: '#292524', true: '#059669' }}
-                  thumbColor={loanDraft?.hasDueDate ? '#34d399' : '#78716c'}
+                  trackColor={{ false: colors.line, true: '#059669' }}
+                  thumbColor={loanDraft?.hasDueDate ? '#34d399' : colors.muted}
                 />
               </View>
               {loanDraft?.hasDueDate && (
                 <>
-                  <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Month</Text>
+                  <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Month</Text>
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-3">
                     {monthNames.map((m, idx) => (
                       <TouchableOpacity
                         key={m}
                         onPress={() => setLoanDraft(d => d && { ...d, dlMonth: idx })}
-                        className={`px-3.5 py-2 mr-2 rounded-full border ${loanDraft.dlMonth === idx ? 'bg-emerald-600 border-emerald-500' : 'bg-black border-stone-800'}`}
+                        className={`px-3.5 py-2 mr-2 rounded-full border ${loanDraft.dlMonth === idx ? 'bg-emerald-600 border-emerald-500' : 'bg-app border-line'}`}
                       >
-                        <Text className={`text-xs font-semibold uppercase tracking-wider ${loanDraft.dlMonth === idx ? 'text-white' : 'text-stone-500'}`}>{m}</Text>
+                        <Text className={`text-xs font-semibold uppercase tracking-wider ${loanDraft.dlMonth === idx ? 'text-white' : 'text-muted'}`}>{m}</Text>
                       </TouchableOpacity>
                     ))}
                   </ScrollView>
-                  <Text className="text-stone-500 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Day</Text>
+                  <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Day</Text>
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-6">
                     {Array.from({ length: new Date(loanDraft.dlYear, loanDraft.dlMonth + 1, 0).getDate() }, (_, i) => i + 1).map(d => (
                       <TouchableOpacity
                         key={d}
                         onPress={() => setLoanDraft(ld => ld && { ...ld, dlDay: d })}
-                        className={`w-10 h-10 mr-1.5 rounded-full items-center justify-center border ${loanDraft.dlDay === d ? 'bg-emerald-600 border-emerald-500' : 'bg-black border-stone-800'}`}
+                        className={`w-10 h-10 mr-1.5 rounded-full items-center justify-center border ${loanDraft.dlDay === d ? 'bg-emerald-600 border-emerald-500' : 'bg-app border-line'}`}
                       >
-                        <Text className={`text-xs font-semibold ${loanDraft.dlDay === d ? 'text-white' : 'text-stone-500'}`}>{d}</Text>
+                        <Text className={`text-xs font-semibold ${loanDraft.dlDay === d ? 'text-white' : 'text-muted'}`}>{d}</Text>
                       </TouchableOpacity>
                     ))}
                   </ScrollView>
@@ -1049,8 +1056,8 @@ export default function SavingsScreen() {
                     <FontAwesome name="trash" size={14} color="#f43f5e" />
                   </TouchableOpacity>
                 )}
-                <TouchableOpacity onPress={() => setLoanDraft(null)} className="flex-1 py-4 rounded-2xl bg-stone-800 items-center">
-                  <Text className="text-white text-sm font-semibold uppercase tracking-wider">Cancel</Text>
+                <TouchableOpacity onPress={() => setLoanDraft(null)} className="flex-1 py-4 rounded-2xl bg-elevated items-center">
+                  <Text className="text-ink text-sm font-semibold uppercase tracking-wider">Cancel</Text>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={handleSaveLoanDraft} disabled={savingLoan} className="flex-1 py-4 rounded-2xl bg-emerald-600 items-center active:bg-emerald-500">
                   {savingLoan ? <ActivityIndicator color="white" /> : <Text className="text-white text-sm font-bold uppercase tracking-wider">{loanDraft?.id ? 'Update' : 'Add'}</Text>}

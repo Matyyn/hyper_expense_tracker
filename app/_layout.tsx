@@ -1,10 +1,11 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { DarkTheme, ThemeProvider } from '@react-navigation/native';
+import { DarkTheme, DefaultTheme, ThemeProvider as NavThemeProvider } from '@react-navigation/native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useFonts } from 'expo-font';
 import * as Notifications from 'expo-notifications';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
+import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef } from 'react';
 import { View, ActivityIndicator, Text, Image } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
@@ -14,8 +15,7 @@ import "../global.css";
 import { NotificationProvider } from '@/components/NotificationProvider';
 import { AuthProvider, useAuth } from '@/components/AuthProvider';
 import { CurrencyProvider } from '@/components/CurrencyProvider';
-
-import { useColorScheme } from '@/components/useColorScheme';
+import { ThemeProvider, useTheme } from '@/components/ThemeProvider';
 
 export {
   // Catch any errors thrown by the Layout component.
@@ -68,11 +68,13 @@ function RootLayoutNav() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <CurrencyProvider>
-          <NotificationProvider>
-            <AuthHandler />
-          </NotificationProvider>
-        </CurrencyProvider>
+        <ThemeProvider>
+          <CurrencyProvider>
+            <NotificationProvider>
+              <AuthHandler />
+            </NotificationProvider>
+          </CurrencyProvider>
+        </ThemeProvider>
       </AuthProvider>
     </QueryClientProvider>
   );
@@ -104,6 +106,7 @@ function AuthHandler() {
     };
   }, []);
 
+  const { scheme, colors } = useTheme();
   const inAuthGroup = segments[0] === '(auth)';
   const onResetPassword = segments[1] === 'reset-password';
   // Hide Stack until we're in the correct route group to prevent flash of wrong screen
@@ -128,23 +131,24 @@ function AuthHandler() {
 
   return (
     <>
-      <ThemeProvider value={DarkTheme}>
-        <Stack screenOptions={{ contentStyle: { backgroundColor: '#000' } }}>
+      <StatusBar style={scheme === 'dark' ? 'light' : 'dark'} />
+      <NavThemeProvider value={scheme === 'dark' ? DarkTheme : DefaultTheme}>
+        <Stack screenOptions={{ contentStyle: { backgroundColor: colors.app } }}>
           <Stack.Screen name="(auth)" options={{ headerShown: false }} />
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen
             name="modal"
             options={{
               headerShown: false,
-              contentStyle: { backgroundColor: '#000' },
+              contentStyle: { backgroundColor: colors.app },
             }}
           />
         </Stack>
-      </ThemeProvider>
+      </NavThemeProvider>
       {!inCorrectRouteGroup && (
-        <Animated.View exiting={FadeOut} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} className="bg-black items-center justify-center">
+        <Animated.View exiting={FadeOut} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.app }} className="items-center justify-center">
           <Image source={require('../assets/images/icon.png')} style={{ width: 80, height: 80, borderRadius: 20, marginBottom: 32 }} />
-          <ActivityIndicator size="large" color="#34d399" />
+          <ActivityIndicator size="large" color={colors.accent} />
           <Text className="text-emerald-400 font-bold mt-6 tracking-widest uppercase text-xs">Loading Hyper Expense</Text>
         </Animated.View>
       )}
