@@ -1,6 +1,6 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { DarkTheme, DefaultTheme, ThemeProvider as NavThemeProvider } from '@react-navigation/native';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
 import { useFonts } from 'expo-font';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
@@ -15,6 +15,16 @@ import { NotificationProvider } from '@/components/NotificationProvider';
 import { AuthProvider, useAuth } from '@/components/AuthProvider';
 import { CurrencyProvider } from '@/components/CurrencyProvider';
 import { ThemeProvider, useTheme } from '@/components/ThemeProvider';
+import { queryClient, PERSISTED_QUERY_ROOTS } from '@/lib/queryClient';
+import { asyncPersister, PERSIST_BUSTER } from '@/lib/persist';
+import { startOnlineManager } from '@/lib/online';
+import { registerOfflineMutations } from '@/lib/offlineMutations';
+
+// Register offline write defaults + connectivity bridge synchronously at module
+// load — BEFORE render and before the persister replays paused mutations, so the
+// replay can find each mutationFn by its mutationKey.
+registerOfflineMutations();
+startOnlineManager();
 
 export {
   // Catch any errors thrown by the Layout component.
@@ -29,15 +39,19 @@ export const unstable_settings = {
 // Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 1000 * 60 * 3,
-      gcTime: 1000 * 60 * 10,
-      retry: 2,
-    },
+const persistOptions = {
+  persister: asyncPersister,
+  maxAge: Infinity,
+  buster: PERSIST_BUSTER,
+  dehydrateOptions: {
+    // Keep offline writes (paused mutations) so they replay after a restart.
+    shouldDehydrateMutation: (m: any) => m.state.isPaused,
+    // Only persist the data queries we actually read offline (keeps the blob
+    // small — Android AsyncStorage is ~6 MB total).
+    shouldDehydrateQuery: (q: any) =>
+      q.state.status === 'success' && PERSISTED_QUERY_ROOTS.has(q.queryKey?.[0]),
   },
-});
+};
 
 export default function RootLayout() {
   const [loaded, error] = useFonts({
@@ -65,7 +79,14 @@ export default function RootLayout() {
 
 function RootLayoutNav() {
   return (
-    <QueryClientProvider client={queryClient}>
+    <PersistQueryClientProvider
+      client={queryClient}
+      persistOptions={persistOptions}
+      // Restore finished: flush any writes that were queued offline in a prior
+      // session. This is the ONLY manual resume — onlineManager auto-resumes on
+      // subsequent reconnects, so we don't double-trigger.
+      onSuccess={() => queryClient.resumePausedMutations()}
+    >
       <AuthProvider>
         <ThemeProvider>
           <CurrencyProvider>
@@ -75,7 +96,7 @@ function RootLayoutNav() {
           </CurrencyProvider>
         </ThemeProvider>
       </AuthProvider>
-    </QueryClientProvider>
+    </PersistQueryClientProvider>
   );
 }
 

@@ -9,6 +9,8 @@ import { useCurrency } from '../../components/CurrencyProvider';
 import { useTheme } from '../../components/ThemeProvider';
 import { ThemeMode } from '../../lib/theme';
 import { supabase } from '../../lib/supabase';
+import { isOnline } from '../../lib/online';
+import { useUserMetadata, useUpdateMetadata } from '../../hooks/useUserMetadata';
 import { CURRENCY_LIST, CurrencyCode } from '../../lib/currency';
 
 function SectionTitle({ icon, label, color = '#34d399' }: { icon: React.ComponentProps<typeof FontAwesome>['name']; label: string; color?: string }) {
@@ -44,6 +46,8 @@ function PasswordInput({ value, onChangeText, placeholder }: { value: string; on
 
 export default function SettingsScreen() {
   const { user } = useAuth();
+  const metadata = useUserMetadata();
+  const { updateMetadata } = useUpdateMetadata();
   const { showNotification } = useNotification();
   const { code: currencyCode } = useCurrency();
   const { mode: themeMode, setMode: setThemeMode } = useTheme();
@@ -63,7 +67,7 @@ export default function SettingsScreen() {
   const [isDeleting, setIsDeleting] = useState(false);
 
   // Name editing
-  const initialName = user?.user_metadata?.username || '';
+  const initialName = metadata?.username || '';
   const [nameInput, setNameInput] = useState(initialName);
   const [isSavingName, setIsSavingName] = useState(false);
 
@@ -72,44 +76,31 @@ export default function SettingsScreen() {
 
   useEffect(() => { setNameInput(initialName); }, [initialName]);
 
-  const handlePickCurrency = async (code: CurrencyCode) => {
-    setCurrencyBusy(true);
-    try {
-      const { error } = await supabase.auth.updateUser({ data: { currency: code } });
-      if (error) throw error;
-      showNotification(`Currency set to ${code}`, 'success');
-      setShowCurrencyModal(false);
-    } catch (e: any) {
-      showNotification(e.message || 'Could not change currency', 'error');
-    } finally {
-      setCurrencyBusy(false);
-    }
+  const handlePickCurrency = (code: CurrencyCode) => {
+    // Queued metadata write — applies offline and resyncs on reconnect.
+    updateMetadata({ currency: code });
+    showNotification(`Currency set to ${code}`, 'success');
+    setShowCurrencyModal(false);
   };
 
-  const handleSaveName = async () => {
+  const handleSaveName = () => {
     const trimmed = nameInput.trim();
     if (!trimmed) {
       showNotification('Name cannot be empty', 'error');
       return;
     }
     if (trimmed === initialName) return;
-
-    setIsSavingName(true);
-    try {
-      const { error } = await supabase.auth.updateUser({ data: { username: trimmed } });
-      if (error) throw error;
-      showNotification('Name updated', 'success');
-    } catch (e: any) {
-      showNotification(e.message, 'error');
-      setNameInput(initialName);
-    } finally {
-      setIsSavingName(false);
-    }
+    updateMetadata({ username: trimmed });
+    showNotification('Name updated', 'success');
   };
 
   const handleUpdatePassword = async () => {
     if (password.length < 6) {
       showNotification('Password must be at least 6 characters', 'error');
+      return;
+    }
+    if (!isOnline()) {
+      showNotification('Connect to the internet to change your password', 'error');
       return;
     }
     setIsUpdating(true);
@@ -127,6 +118,10 @@ export default function SettingsScreen() {
 
   const handleDeleteAccount = async () => {
     if (!user?.id) return;
+    if (!isOnline()) {
+      showNotification('Connect to the internet to delete your account', 'error');
+      return;
+    }
     setIsDeleting(true);
     try {
       const { error } = await supabase.rpc('delete_user');
@@ -140,7 +135,7 @@ export default function SettingsScreen() {
     }
   };
 
-  const username = user?.user_metadata?.username || 'User';
+  const username = metadata?.username || 'User';
   const initial = (username[0] || 'U').toUpperCase();
   const nameDirty = nameInput.trim() !== initialName && nameInput.trim().length > 0;
 

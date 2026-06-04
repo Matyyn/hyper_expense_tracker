@@ -7,7 +7,7 @@ import { useAuth } from '../../components/AuthProvider';
 import { useCurrency } from '../../components/CurrencyProvider';
 import { useNotification } from '../../components/NotificationProvider';
 import { useQueryClient } from '@tanstack/react-query';
-import { supabase } from '../../lib/supabase';
+import { useUserMetadata, useUpdateMetadata } from '../../hooks/useUserMetadata';
 
 function SectionTitle({ icon, label, color = '#34d399', right }: { icon: React.ComponentProps<typeof FontAwesome>['name']; label: string; color?: string; right?: React.ReactNode }) {
   return (
@@ -26,6 +26,8 @@ function SectionTitle({ icon, label, color = '#34d399', right }: { icon: React.C
 export default function AnalyticsScreen() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
+  const metadata = useUserMetadata();
+  const { updateMetadata } = useUpdateMetadata();
   const { format, symbol } = useCurrency();
   const { showNotification } = useNotification();
   const [refreshing, setRefreshing] = useState(false);
@@ -36,7 +38,7 @@ export default function AnalyticsScreen() {
   );
   const { totalSpentMonthly, totalIncomeMonthly, monthlyBudget, displayTotalMonthly } = metrics;
 
-  const initialBudgets: Record<string, number> = (user?.user_metadata?.category_budgets as Record<string, number>) || {};
+  const initialBudgets: Record<string, number> = (metadata?.category_budgets as Record<string, number>) || {};
   const [showBudgetsModal, setShowBudgetsModal] = useState(false);
   const [budgetDrafts, setBudgetDrafts] = useState<Record<string, string>>({});
   const [savingBudgets, setSavingBudgets] = useState(false);
@@ -48,24 +50,16 @@ export default function AnalyticsScreen() {
     setBudgetDrafts(map);
   }, [showBudgetsModal]);
 
-  const handleSaveBudgets = async () => {
-    setSavingBudgets(true);
-    try {
-      const cleaned: Record<string, number> = {};
-      Object.entries(budgetDrafts).forEach(([cat, val]) => {
-        const n = Number(val);
-        if (!isNaN(n) && n > 0) cleaned[cat] = n;
-      });
-      const { error } = await supabase.auth.updateUser({ data: { category_budgets: cleaned } });
-      if (error) throw error;
-      await supabase.auth.refreshSession();
-      showNotification('Category budgets saved', 'success');
-      setShowBudgetsModal(false);
-    } catch (e: any) {
-      showNotification(e.message || 'Could not save budgets', 'error');
-    } finally {
-      setSavingBudgets(false);
-    }
+  const handleSaveBudgets = () => {
+    const cleaned: Record<string, number> = {};
+    Object.entries(budgetDrafts).forEach(([cat, val]) => {
+      const n = Number(val);
+      if (!isNaN(n) && n > 0) cleaned[cat] = n;
+    });
+    // Queued metadata write — applies offline and resyncs on reconnect.
+    updateMetadata({ category_budgets: cleaned });
+    showNotification('Category budgets saved', 'success');
+    setShowBudgetsModal(false);
   };
 
   const categoryTotals = displayExpenses.reduce((acc, exp) => {

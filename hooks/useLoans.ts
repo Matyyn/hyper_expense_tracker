@@ -1,5 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../lib/supabase';
+import { useAuth } from '../components/AuthProvider';
+import { newId } from '../lib/ids';
+import { runWrite } from '../lib/runWrite';
 
 export interface Loan {
   id: string;
@@ -47,6 +50,20 @@ export interface UpdateLoanPatch {
   settled_at?: string | null;
 }
 
+function isWeekendNow() {
+  const d = new Date();
+  return d.getDay() === 0 || d.getDay() === 6;
+}
+
+// Loan writes are multi-step (expense + loan + optional payment) and were the
+// hardest part of going offline: the old code did `.insert().select().single()`
+// to read SERVER-generated ids and `.select()` to read current state — neither
+// works offline. Now every id is minted client-side (so FK links are
+// deterministic) and current state is read from the react-query cache, so the
+// whole flow runs offline. The actual DB work + optimistic cache updates live in
+// lib/offlineMutations.ts (keyed by mutationKey); these wrappers only shape the
+// variables, computing the auto-settle decision + timestamps up front so a write
+// replayed hours later on reconnect records the original moment, not "now".
 export function useLoans(userId: string | undefined) {
   const queryClient = useQueryClient();
 
@@ -70,245 +87,123 @@ export function useLoans(userId: string | undefined) {
     enabled: !!userId,
   });
 
-  const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ['loans', userId] });
-    queryClient.invalidateQueries({ queryKey: ['loans_raw', userId] });
-    queryClient.invalidateQueries({ queryKey: ['loan_payments_all', userId] });
-    queryClient.invalidateQueries({ queryKey: ['expenses', userId] });
-    queryClient.invalidateQueries({ queryKey: ['expenses-history'] });
+  // Shared scope serializes ALL loan writes for this user so that, on reconnect,
+  // a loan insert always completes before a later payment/settle that FK-references
+  // it (otherwise the dependent insert could race ahead and violate the FK).
+  const scope = { id: `loans-${userId ?? 'anon'}` };
+  const addLoanMutation = useMutation<unknown, unknown, any>({ mutationKey: ['addLoan'], scope });
+  const updateLoanMutation = useMutation<unknown, unknown, any>({ mutationKey: ['updateLoan'], scope });
+  const deleteLoanMutation = useMutation<unknown, unknown, any>({ mutationKey: ['deleteLoan'], scope });
+  const addPaymentMutation = useMutation<unknown, unknown, any>({ mutationKey: ['addPayment'], scope });
+  const settleLoanMutation = useMutation<unknown, unknown, any>({ mutationKey: ['settleLoan'], scope });
+
+  // loans_raw holds expense_id + type (the loans_with_totals view omits expense_id).
+  const getRaw = () => (queryClient.getQueryData(['loans_raw', userId]) as any[]) || [];
+
+  const addLoan = (input: AddLoanInput) => {
+    const created_at = new Date().toISOString();
+    const paid = input.paid && input.paid > 0 ? input.paid : 0;
+    return runWrite(addLoanMutation, {
+      userId,
+      loanId: newId(),
+      expenseId: newId(),
+      payExpenseId: paid > 0 && input.type === 'borrowed' ? newId() : null,
+      paymentId: paid > 0 ? newId() : null,
+      type: input.type,
+      person: input.person,
+      principal: input.principal,
+      source: input.source ?? null,
+      description: input.description ?? null,
+      due_date: input.due_date ?? null,
+      created_at,
+      paid,
+      settled_at: paid > 0 && paid >= input.principal ? created_at : null,
+      is_weekend: isWeekendNow(),
+    });
   };
 
-  function isWeekendDate(d: Date) {
-    return d.getDay() === 0 || d.getDay() === 6;
-  }
+  const updateLoan = (id: string, patch: UpdateLoanPatch) => {
+    const current = getRaw().find((l) => l.id === id);
+    const expensePatch: Record<string, any> = {};
+    if (patch.principal !== undefined) expensePatch.amount = patch.principal;
+    if (patch.source !== undefined) expensePatch.source = patch.source;
+    if (patch.person !== undefined) {
+      const t = patch.type ?? current?.type;
+      expensePatch.description =
+        t === 'lent' ? `Lent to ${patch.person}` : `Borrowed from ${patch.person}`;
+    }
+    return runWrite(updateLoanMutation, {
+      userId,
+      id,
+      patch,
+      expenseId: current?.expense_id ?? null,
+      expensePatch,
+    });
+  };
 
-  async function createLinkedExpense(opts: {
-    amount: number;
-    description: string;
-    category: string;
-    source: string | null;
-  }) {
-    const now = new Date();
-    const { data, error } = await supabase
-      .from('expenses')
-      .insert([{
-        user_id: userId,
-        amount: opts.amount,
-        description: opts.description,
-        category: opts.category,
-        source: opts.source,
-        is_weekend: isWeekendDate(now),
-      }])
-      .select()
-      .single();
-    if (error) throw error;
-    return data.id as string;
-  }
+  const deleteLoan = (id: string) => {
+    const current = getRaw().find((l) => l.id === id);
+    return runWrite(deleteLoanMutation, { userId, id, expenseId: current?.expense_id ?? null });
+  };
 
-  // Lent loans   → Lending expense (deducts budget, money left wallet).
-  // Borrowed loans → Income expense (adds to source budget, money received).
-  // Lent repaid   → NO expense row. Repayment just cancels the original lend; tracked in loans table only.
-  // Borrowed repaid → Lending expense (deducts budget, money leaving to repay).
-  const addLoanMutation = useMutation({
-    mutationFn: async (input: AddLoanInput) => {
-      if (!userId) throw new Error('Not signed in');
+  const addPayment = (loanId: string, amount: number, note?: string) => {
+    const loan = loansQuery.data?.find((l) => l.id === loanId);
+    if (!loan) return Promise.reject(new Error('Loan not found'));
+    const created_at = new Date().toISOString();
+    const willSettle = !loan.settled_at && loan.paid + amount >= loan.principal;
+    return runWrite(addPaymentMutation, {
+      userId,
+      loanId,
+      paymentId: newId(),
+      amount,
+      note: note ?? null,
+      // Lent repayment → no expense row; borrowed repayment → Lending expense.
+      expenseId: loan.type === 'borrowed' ? newId() : null,
+      person: loan.person,
+      source: loan.source ?? null,
+      settled_at: willSettle ? created_at : null,
+      created_at,
+      is_weekend: isWeekendNow(),
+    });
+  };
 
-      const expenseId = await createLinkedExpense({
-        amount: input.principal,
-        description: input.type === 'lent'
-          ? `Lent to ${input.person}`
-          : `Borrowed from ${input.person}`,
-        category: input.type === 'lent' ? 'Lending' : 'Income',
-        source: input.source ?? null,
-      });
-
-      const { data: loan, error } = await supabase
-        .from('loans')
-        .insert([{
-          user_id: userId,
-          type: input.type,
-          person: input.person,
-          principal: input.principal,
-          source: input.source ?? null,
-          description: input.description ?? null,
-          due_date: input.due_date ?? null,
-          expense_id: expenseId,
-        }])
-        .select()
-        .single();
-      if (error) {
-        await supabase.from('expenses').delete().eq('id', expenseId);
-        throw error;
-      }
-
-      // Initial paid amount: lent repayment → no expense; borrowed repayment → Lending expense.
-      if (input.paid && input.paid > 0) {
-        let payExpenseId: string | null = null;
-        if (input.type === 'borrowed') {
-          payExpenseId = await createLinkedExpense({
-            amount: input.paid,
-            description: `Repayment to ${input.person}`,
-            category: 'Lending',
-            source: input.source ?? null,
-          });
-        }
-        const { error: payErr } = await supabase.from('loan_payments').insert([{
-          loan_id: loan.id,
-          amount: input.paid,
-          note: 'Initial paid amount',
-          expense_id: payExpenseId,
-        }]);
-        if (payErr) {
-          if (payExpenseId) await supabase.from('expenses').delete().eq('id', payExpenseId);
-          throw payErr;
-        }
-        if (input.paid >= input.principal) {
-          await supabase
-            .from('loans')
-            .update({ settled_at: new Date().toISOString() })
-            .eq('id', loan.id);
-        }
-      }
-      return loan;
-    },
-    onSettled: invalidate,
-  });
-
-  const updateLoanMutation = useMutation({
-    mutationFn: async ({ id, patch }: { id: string; patch: UpdateLoanPatch }) => {
-      const { data: current, error: getErr } = await supabase
-        .from('loans')
-        .select('expense_id, type, person')
-        .eq('id', id)
-        .single();
-      if (getErr) throw getErr;
-
-      const { error } = await supabase.from('loans').update(patch).eq('id', id);
-      if (error) throw error;
-
-      if (current?.expense_id) {
-        const expensePatch: Record<string, any> = {};
-        if (patch.principal !== undefined) expensePatch.amount = patch.principal;
-        if (patch.source !== undefined) expensePatch.source = patch.source;
-        if (patch.person !== undefined) {
-          const t = patch.type ?? current.type;
-          expensePatch.description = t === 'lent' ? `Lent to ${patch.person}` : `Borrowed from ${patch.person}`;
-        }
-        if (Object.keys(expensePatch).length > 0) {
-          await supabase.from('expenses').update(expensePatch).eq('id', current.expense_id);
-        }
-      }
-    },
-    onSettled: invalidate,
-  });
-
-  const deleteLoanMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const { data: current } = await supabase
-        .from('loans')
-        .select('expense_id')
-        .eq('id', id)
-        .single();
-      const { error } = await supabase.from('loans').delete().eq('id', id);
-      if (error) throw error;
-      if (current?.expense_id) {
-        await supabase.from('expenses').delete().eq('id', current.expense_id);
-      }
-    },
-    onSettled: invalidate,
-  });
-
-  const addPaymentMutation = useMutation({
-    mutationFn: async ({ loanId, amount, note }: { loanId: string; amount: number; note?: string }) => {
-      const loan = loansQuery.data?.find(l => l.id === loanId);
-      if (!loan) throw new Error('Loan not found');
-
-      // Lent repayment → no expense row (repayment just cancels the original lend).
-      // Borrowed repayment → Lending expense (money leaving wallet to repay debt).
-      let expenseId: string | null = null;
-      if (loan.type === 'borrowed') {
-        expenseId = await createLinkedExpense({
-          amount,
-          description: `Repayment to ${loan.person}`,
-          category: 'Lending',
-          source: loan.source ?? null,
-        });
-      }
-
-      const { error } = await supabase.from('loan_payments').insert([{
-        loan_id: loanId,
-        amount,
-        note: note ?? null,
-        expense_id: expenseId,
-      }]);
-      if (error) {
-        if (expenseId) await supabase.from('expenses').delete().eq('id', expenseId);
-        throw error;
-      }
-
-      // Auto-settle once cumulative payments cover the principal (both lent and borrowed).
-      if (!loan.settled_at && loan.paid + amount >= loan.principal) {
-        await supabase
-          .from('loans')
-          .update({ settled_at: new Date().toISOString() })
-          .eq('id', loanId);
-      }
-    },
-    onSettled: invalidate,
-  });
-
-  // Insert a payment for the remaining balance (if any) and stamp settled_at.
-  // Done as two writes; if the second fails, we have an extra payment row
-  // that the user can see in payment history — not silently corrupted.
-  const settleLoanMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const loan = loansQuery.data?.find(l => l.id === id);
-      if (!loan) throw new Error('Loan not found');
-      if (loan.remaining > 0) {
-        let expenseId: string | null = null;
-        if (loan.type === 'borrowed') {
-          expenseId = await createLinkedExpense({
-            amount: loan.remaining,
-            description: `Repayment to ${loan.person}`,
-            category: 'Lending',
-            source: loan.source ?? null,
-          });
-        }
-        const { error: payErr } = await supabase.from('loan_payments').insert([{
-          loan_id: id,
-          amount: loan.remaining,
-          note: 'Settled',
-          expense_id: expenseId,
-        }]);
-        if (payErr) {
-          if (expenseId) await supabase.from('expenses').delete().eq('id', expenseId);
-          throw payErr;
-        }
-      }
-      const { error } = await supabase
-        .from('loans')
-        .update({ settled_at: new Date().toISOString() })
-        .eq('id', id);
-      if (error) throw error;
-      return loan;
-    },
-    onSettled: invalidate,
-  });
+  const settleLoan = (id: string) => {
+    const loan = loansQuery.data?.find((l) => l.id === id);
+    if (!loan) return Promise.reject(new Error('Loan not found'));
+    const created_at = new Date().toISOString();
+    const remaining = loan.remaining;
+    return runWrite(
+      settleLoanMutation,
+      {
+        userId,
+        id,
+        remaining,
+        expenseId: remaining > 0 && loan.type === 'borrowed' ? newId() : null,
+        paymentId: remaining > 0 ? newId() : null,
+        person: loan.person,
+        source: loan.source ?? null,
+        settled_at: created_at,
+        created_at,
+        is_weekend: isWeekendNow(),
+      },
+      loan // optimistic result — handler reads loan.type/person/principal
+    );
+  };
 
   return {
     loans: loansQuery.data ?? [],
     isLoading: loansQuery.isLoading,
-    addLoan: addLoanMutation.mutateAsync,
-    updateLoan: (id: string, patch: UpdateLoanPatch) => updateLoanMutation.mutateAsync({ id, patch }),
-    deleteLoan: deleteLoanMutation.mutateAsync,
-    addPayment: (loanId: string, amount: number, note?: string) =>
-      addPaymentMutation.mutateAsync({ loanId, amount, note }),
-    settleLoan: settleLoanMutation.mutateAsync,
+    addLoan,
+    updateLoan,
+    deleteLoan,
+    addPayment,
+    settleLoan,
   };
 }
 
 export function useLoanPayments(loanId: string | undefined | null) {
-  const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const userId = user?.id;
 
   const query = useQuery<LoanPayment[]>({
     queryKey: ['loan_payments', loanId],
@@ -325,37 +220,28 @@ export function useLoanPayments(loanId: string | undefined | null) {
     enabled: !!loanId,
   });
 
-  // Deleting a payment reduces paid. If the loan was previously stamped
-  // settled_at (via the Settle button), clear it so the loan reopens —
-  // otherwise the view would still report is_settled = true via the
-  // settled_at branch even though paid < principal.
-  const deletePaymentMutation = useMutation({
-    mutationFn: async (paymentId: string) => {
-      const { data: payment, error: getErr } = await supabase
-        .from('loan_payments')
-        .select('loan_id, expense_id')
-        .eq('id', paymentId)
-        .single();
-      if (getErr) throw getErr;
-      const { error } = await supabase.from('loan_payments').delete().eq('id', paymentId);
-      if (error) throw error;
-      if (payment?.expense_id) {
-        await supabase.from('expenses').delete().eq('id', payment.expense_id);
-      }
-      if (payment?.loan_id) {
-        await supabase.from('loans').update({ settled_at: null }).eq('id', payment.loan_id);
-      }
-    },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['loan_payments', loanId] });
-      queryClient.invalidateQueries({ queryKey: ['loans'] });
-      queryClient.invalidateQueries({ queryKey: ['expenses'] });
-    },
+  const deletePaymentMutation = useMutation<unknown, unknown, any>({
+    mutationKey: ['deletePayment'],
+    scope: { id: `loans-${userId ?? 'anon'}` },
   });
+
+  // Deleting a payment reduces paid; we always clear the loan's settled_at so a
+  // manually-settled loan reopens (the view would otherwise still report settled
+  // via the settled_at branch even though paid < principal).
+  const deletePayment = (paymentId: string) => {
+    const payment = (query.data || []).find((p) => p.id === paymentId) as any;
+    return runWrite(deletePaymentMutation, {
+      userId,
+      paymentId,
+      loanId,
+      expenseId: payment?.expense_id ?? null,
+      reopen: true,
+    });
+  };
 
   return {
     payments: query.data ?? [],
     isLoading: query.isLoading,
-    deletePayment: deletePaymentMutation.mutateAsync,
+    deletePayment,
   };
 }

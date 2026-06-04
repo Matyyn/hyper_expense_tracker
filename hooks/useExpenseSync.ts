@@ -2,6 +2,8 @@ import { useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../lib/supabase';
 import { isWeekend } from 'date-fns';
+import { newId } from '../lib/ids';
+import { runWrite } from '../lib/runWrite';
 
 export const INCOME_CATEGORY = 'Income';
 export const LENDING_CATEGORY = 'Lending';
@@ -171,8 +173,11 @@ export function useExpenseSync(userId: string | undefined, budgetFallback = 0, g
 
   const loanIds = useMemo(() => loans.map(l => l.id), [loans]);
 
+  // Stable key (no loanIds in it) so optimistic loan/payment writes target the
+  // same cache entry across loan additions. The current loanIds are read inside
+  // the queryFn; loan mutations invalidate this key, refetching with fresh ids.
   const { data: loanPayments = [] } = useQuery({
-    queryKey: ['loan_payments_all', userId, loanIds.join(',')],
+    queryKey: ['loan_payments_all', userId],
     queryFn: async () => {
       if (!userId || loanIds.length === 0) return [];
       const { data, error } = await supabase
@@ -274,137 +279,59 @@ export function useExpenseSync(userId: string | undefined, budgetFallback = 0, g
 
   const streak = useMemo(() => computeStreak(allExpenses), [allExpenses]);
 
-  const addExpenseMutation = useMutation({
-    mutationFn: async (payload: NewExpensePayload) => {
-      const expenseDate = payload.date ? new Date(payload.date) : new Date();
-      const insertData: any = {
-        amount: payload.amount,
-        description: payload.description,
-        category: payload.category,
-        user_id: userId,
-        is_weekend: isWeekend(expenseDate),
-        source: payload.source || null,
-      };
-      if (payload.date) {
-        insertData.created_at = new Date(payload.date).toISOString();
-      }
-      const { data, error } = await supabase.from('expenses').insert([insertData]).select().single();
-      if (error) throw error;
-      return data;
-    },
-    onMutate: async (payload) => {
-      await queryClient.cancelQueries({ queryKey: ['expenses', userId] });
-      const prev = queryClient.getQueryData(['expenses', userId]);
-      const expenseDate = payload.date ? new Date(payload.date) : new Date();
-      queryClient.setQueryData(['expenses', userId], (old: any) => [
-        { id: `optimistic-${Date.now()}`, amount: payload.amount, description: payload.description, category: payload.category, is_weekend: isWeekend(expenseDate), created_at: expenseDate.toISOString(), source: payload.source },
-        ...(old || []),
-      ]);
-      return { prev };
-    },
-    onError: (e, _p, ctx) => {
-      console.error('Add Expense Error:', e);
-      if (ctx?.prev) queryClient.setQueryData(['expenses', userId], ctx.prev);
-    },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['expenses', userId] });
-      queryClient.invalidateQueries({ queryKey: ['expenses-history'] });
-    },
-  });
+  // Mutations are registered centrally in lib/offlineMutations.ts (keyed by
+  // mutationKey) so they queue offline and replay after a restart. These hooks
+  // only shape the variables: mint client UUIDs + stamp timestamps up front so
+  // they're identical for the optimistic row and the eventual (possibly much
+  // later) server insert.
+  // Variables are typed `any` because the mutationFn/onMutate live in the central
+  // registry (lib/offlineMutations.ts); these only inherit the defaults by key.
+  const addExpenseMutation = useMutation<unknown, unknown, any>({ mutationKey: ['addExpense'] });
+  const deleteExpenseMutation = useMutation<unknown, unknown, any>({ mutationKey: ['deleteExpense'] });
+  const updateExpenseMutation = useMutation<unknown, unknown, any>({ mutationKey: ['updateExpense'] });
+  const updateProfileMutation = useMutation<unknown, unknown, any>({ mutationKey: ['updateProfile'] });
+  const updateTemplateMutation = useMutation<unknown, unknown, any>({ mutationKey: ['updateTemplate'] });
+  const addTemplateMutation = useMutation<unknown, unknown, any>({ mutationKey: ['addTemplate'] });
+  const deleteTemplateMutation = useMutation<unknown, unknown, any>({ mutationKey: ['deleteTemplate'] });
 
-  const deleteExpenseMutation = useMutation({
-    mutationFn: async (expenseId: string) => {
-      const { error } = await supabase.from('expenses').delete().eq('id', expenseId);
-      if (error) throw error;
-    },
-    onMutate: async (expenseId) => {
-      await queryClient.cancelQueries({ queryKey: ['expenses', userId] });
-      const prev = queryClient.getQueryData(['expenses', userId]);
-      queryClient.setQueryData(['expenses', userId], (old: any) => (old || []).filter((e: Expense) => e.id !== expenseId));
-      return { prev };
-    },
-    onError: (e, _id, ctx) => {
-      console.error('Delete Expense Error:', e);
-      if (ctx?.prev) queryClient.setQueryData(['expenses', userId], ctx.prev);
-    },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['expenses', userId] });
-      queryClient.invalidateQueries({ queryKey: ['expenses-history'] });
-    },
-  });
+  const buildExpenseVars = (payload: NewExpensePayload) => {
+    const date = payload.date ? new Date(payload.date) : new Date();
+    return {
+      id: newId(),
+      userId,
+      amount: payload.amount,
+      description: payload.description,
+      category: payload.category,
+      is_weekend: isWeekend(date),
+      created_at: date.toISOString(),
+      source: payload.source ?? null,
+    };
+  };
 
-  const updateProfileMutation = useMutation({
-    mutationFn: async (updates: { monthly_budget?: number; savings_goal?: number }) => {
-      const { error } = await supabase.from('profiles').update(updates).eq('id', userId || '');
-      if (error) throw error;
-    },
-    onMutate: async (updates) => {
-      await queryClient.cancelQueries({ queryKey: ['profile', userId] });
-      const prev = queryClient.getQueryData(['profile', userId]);
-      queryClient.setQueryData(['profile', userId], (old: any) => ({ ...old, ...updates }));
-      return { prev };
-    },
-    onError: (e, _u, ctx) => {
-      console.error('Update Profile Error:', e);
-      if (ctx?.prev) queryClient.setQueryData(['profile', userId], ctx.prev);
-    },
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['profile', userId] }),
-  });
-
-  const updateTemplateMutation = useMutation({
-    mutationFn: async ({ id, ...updates }: { id: string } & Partial<QuickTemplate>) => {
-      const { error } = await supabase.from('quick_templates').update(updates).eq('id', id);
-      if (error) throw error;
-    },
-    onMutate: async ({ id, ...updates }) => {
-      await queryClient.cancelQueries({ queryKey: ['quick_templates', userId] });
-      const prev = queryClient.getQueryData(['quick_templates', userId]);
-      queryClient.setQueryData(['quick_templates', userId], (old: any) =>
-        (old || []).map((t: QuickTemplate) => t.id === id ? { ...t, ...updates } : t)
-      );
-      return { prev };
-    },
-    onError: (e, _vars, ctx) => {
-      console.error('Update Template Error:', e);
-      if (ctx?.prev) queryClient.setQueryData(['quick_templates', userId], ctx.prev);
-    },
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['quick_templates', userId] }),
-  });
-
-  const addTemplateMutation = useMutation({
-    mutationFn: async (payload: NewTemplatePayload) => {
-      const sort_order = quickTemplates.filter(t => t.group_name === payload.group_name).length;
-      const { data, error } = await supabase.from('quick_templates').insert([{ ...payload, user_id: userId, sort_order }]).select().single();
-      if (error) throw error;
-      return data;
-    },
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['quick_templates', userId] }),
-  });
-
-  const deleteTemplateMutation = useMutation({
-    mutationFn: async (id: string) => {
-      // Select the deleted rows back so we can detect an RLS-blocked delete, which
-      // returns no error but removes 0 rows (causing the template to reappear).
-      const { data, error } = await supabase.from('quick_templates').delete().eq('id', id).select('id');
-      if (error) throw error;
-      if (!data || data.length === 0) {
-        throw new Error('Could not delete template. Run the latest database migration (quick_templates delete policy).');
-      }
-    },
-    onMutate: async (id) => {
-      await queryClient.cancelQueries({ queryKey: ['quick_templates', userId] });
-      const prev = queryClient.getQueryData(['quick_templates', userId]);
-      queryClient.setQueryData(['quick_templates', userId], (old: any) =>
-        (old || []).filter((t: QuickTemplate) => t.id !== id)
-      );
-      return { prev };
-    },
-    onError: (e, _id, ctx) => {
-      console.error('Delete Template Error:', e);
-      if (ctx?.prev) queryClient.setQueryData(['quick_templates', userId], ctx.prev);
-    },
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['quick_templates', userId] }),
-  });
+  const addExpense = (payload: NewExpensePayload) => addExpenseMutation.mutate(buildExpenseVars(payload));
+  const addExpenseAsync = (payload: NewExpensePayload) => addExpenseMutation.mutateAsync(buildExpenseVars(payload));
+  const deleteExpense = (expenseId: string) => deleteExpenseMutation.mutate({ userId, expenseId });
+  const deleteExpenseAsync = (expenseId: string) => deleteExpenseMutation.mutateAsync({ userId, expenseId });
+  // updates: { description?, amount?, category?, source? }. Pass year/month to
+  // optimistically patch the History month cache too (for edits made there).
+  const updateExpenseAsync = (
+    id: string,
+    updates: Record<string, any>,
+    opts?: { year?: number; month?: number }
+  ) => runWrite(updateExpenseMutation, { userId, id, updates, year: opts?.year, month: opts?.month });
+  const updateProfile = (updates: { monthly_budget?: number; savings_goal?: number; total_savings?: number }) =>
+    updateProfileMutation.mutate({ userId, updates });
+  const updateTemplate = ({ id, ...updates }: { id: string } & Partial<QuickTemplate>) =>
+    updateTemplateMutation.mutate({ userId, id, updates });
+  const addTemplate = (payload: NewTemplatePayload) =>
+    addTemplateMutation.mutate({
+      id: newId(),
+      userId,
+      ...payload,
+      sort_order: quickTemplates.filter(t => t.group_name === payload.group_name).length,
+    });
+  const deleteTemplate = (id: string) => deleteTemplateMutation.mutate({ userId, id });
+  const deleteTemplateAsync = (id: string) => runWrite(deleteTemplateMutation, { userId, id });
 
   const { commuteTemplates, foodTemplates, otherTemplates, templateGroups, categoryMap } = useMemo(() => {
     const commute = quickTemplates.filter(t => t.group_name === 'commute');
@@ -459,15 +386,16 @@ export function useExpenseSync(userId: string | undefined, budgetFallback = 0, g
       savingsGoal,
       streak,
     },
-    addExpense: addExpenseMutation.mutate,
-    addExpenseAsync: addExpenseMutation.mutateAsync,
-    deleteExpense: deleteExpenseMutation.mutate,
-    deleteExpenseAsync: deleteExpenseMutation.mutateAsync,
-    updateProfile: updateProfileMutation.mutate,
-    updateTemplate: updateTemplateMutation.mutate,
-    addTemplate: addTemplateMutation.mutate,
-    deleteTemplate: deleteTemplateMutation.mutate,
-    deleteTemplateAsync: deleteTemplateMutation.mutateAsync,
+    addExpense,
+    addExpenseAsync,
+    deleteExpense,
+    deleteExpenseAsync,
+    updateExpenseAsync,
+    updateProfile,
+    updateTemplate,
+    addTemplate,
+    deleteTemplate,
+    deleteTemplateAsync,
     isAdding: addExpenseMutation.isPending,
     isDeleting: deleteExpenseMutation.isPending,
   };

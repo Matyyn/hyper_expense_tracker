@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useMemo } from 'react';
-import { useAuth } from './AuthProvider';
+import { useUserMetadata } from '../hooks/useUserMetadata';
 import { CurrencyCode, CurrencyDef, formatMoney as fmt, getCurrency } from '../lib/currency';
 
 interface CurrencyContextValue {
@@ -19,10 +19,10 @@ const CurrencyContext = createContext<CurrencyContextValue>({
 export const useCurrency = () => useContext(CurrencyContext);
 
 export const CurrencyProvider = ({ children }: { children: React.ReactNode }) => {
-  const { user } = useAuth();
+  const metadata = useUserMetadata();
 
   const value = useMemo<CurrencyContextValue>(() => {
-    const rawCode = (user?.user_metadata?.currency as string) || 'PKR';
+    const rawCode = (metadata?.currency as string) || 'PKR';
     const currency = getCurrency(rawCode);
     return {
       code: currency.code,
@@ -30,7 +30,7 @@ export const CurrencyProvider = ({ children }: { children: React.ReactNode }) =>
       symbol: currency.symbol,
       format: (n: number) => fmt(n, currency.code),
     };
-  }, [user?.user_metadata?.currency]);
+  }, [metadata?.currency]);
 
   return <CurrencyContext.Provider value={value}>{children}</CurrencyContext.Provider>;
 };

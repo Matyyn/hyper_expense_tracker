@@ -10,7 +10,7 @@ import { useCurrency } from '../../components/CurrencyProvider';
 import { useTheme } from '../../components/ThemeProvider';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, router } from 'expo-router';
-import { supabase } from '../../lib/supabase';
+import { useUserMetadata, useUpdateMetadata } from '../../hooks/useUserMetadata';
 
 interface SavingsGoal {
   id: string;
@@ -70,10 +70,12 @@ export default function SavingsScreen() {
   const queryClient = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
 
+  const metadata = useUserMetadata();
+  const { updateMetadata } = useUpdateMetadata();
   const { metrics, updateProfile, profile } = useExpenseSync(
     user?.id,
-    (user?.user_metadata?.monthly_budget as number) || 0,
-    (user?.user_metadata?.savings_goal as number) || 0,
+    (metadata?.monthly_budget as number) || 0,
+    (metadata?.savings_goal as number) || 0,
   );
   const { loans, addLoan, updateLoan, deleteLoan, addPayment, settleLoan } = useLoans(user?.id);
   const [processingLoanIds, setProcessingLoanIds] = useState<Set<string>>(new Set());
@@ -88,13 +90,13 @@ export default function SavingsScreen() {
   const { format, symbol } = useCurrency();
   const { colors } = useTheme();
   const { savingsThisMonth, savingsGoal, totalSavings, monthlyBudget } = metrics;
-  const savedSources = ((user?.user_metadata?.custom_sources as Array<{name: string}>) || [{ name: 'Cash' }]).map((s: {name: string}) => s.name);
+  const savedSources = ((metadata?.custom_sources as Array<{name: string}>) || [{ name: 'Cash' }]).map((s: {name: string}) => s.name);
 
   const scrollRef = useRef<ScrollView>(null);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
 
   const [goalInput, setGoalInput] = useState(savingsGoal.toString());
-  const initialGoals: SavingsGoal[] = (user?.user_metadata?.savings_goals as SavingsGoal[]) || [];
+  const initialGoals: SavingsGoal[] = (metadata?.savings_goals as SavingsGoal[]) || [];
   const [goalDraft, setGoalDraft] = useState<GoalDraft | null>(null);
   const [savingGoal, setSavingGoal] = useState(false);
   const [contributeAmounts, setContributeAmounts] = useState<Record<string, string>>({});
@@ -148,21 +150,14 @@ export default function SavingsScreen() {
     setHasDeadline(false);
   }, [goalDraft?.id, goalDraft?.deadline]);
 
-  const handleSaveMonthlyGoal = async () => {
+  const handleSaveMonthlyGoal = () => {
     const amount = Number(goalInput);
     if (isNaN(amount) || amount < 0) return;
-    try {
-      const { error } = await supabase
-        .from('profiles')
-        .update({ savings_goal: amount })
-        .eq('id', user!.id);
-      if (error) throw error;
-      await supabase.auth.updateUser({ data: { savings_goal: amount } });
-      await queryClient.invalidateQueries({ queryKey: ['profile', user?.id] });
-      showNotification(`Monthly goal updated to ${format(amount)}`, 'success');
-    } catch (e: any) {
-      showNotification(e.message || 'Could not update goal', 'error');
-    }
+    // Both queued (offline-safe). savings_goal lives in profiles AND mirrored in
+    // user_metadata; update both so reads from either stay consistent.
+    updateProfile({ savings_goal: amount });
+    updateMetadata({ savings_goal: amount });
+    showNotification(`Monthly goal updated to ${format(amount)}`, 'success');
   };
 
   const onRefresh = async () => {
@@ -175,17 +170,9 @@ export default function SavingsScreen() {
   };
 
   const persistGoals = async (goals: SavingsGoal[]) => {
-    setSavingGoal(true);
-    try {
-      const { error } = await supabase.auth.updateUser({ data: { savings_goals: goals } });
-      if (error) throw error;
-      return true;
-    } catch (e: any) {
-      showNotification(e.message || 'Could not save goals', 'error');
-      return false;
-    } finally {
-      setSavingGoal(false);
-    }
+    // Queued metadata write — applies offline (optimistically) and resyncs later.
+    updateMetadata({ savings_goals: goals });
+    return true;
   };
 
   const handleSaveGoalDraft = async () => {
@@ -229,26 +216,21 @@ export default function SavingsScreen() {
   const handleExpiredGoals = async (expired: SavingsGoal[]) => {
     const amountToAdd = expired.reduce((sum, g) => sum + g.current, 0);
     const remaining = initialGoals.filter(g => !expired.some(e => e.id === g.id));
-    const { error: profileErr } = await supabase
-      .from('profiles')
-      .update({ total_savings: totalSavings + amountToAdd })
-      .eq('id', user!.id);
-    if (profileErr) return;
-    const { error: metaErr } = await supabase.auth.updateUser({ data: { savings_goals: remaining } });
-    if (!metaErr) {
-      queryClient.invalidateQueries({ queryKey: ['profile', user?.id] });
-      showNotification(
-        amountToAdd > 0
-          ? `${expired.length} goal${expired.length > 1 ? 's' : ''} expired — ${format(amountToAdd)} added to savings`
-          : `${expired.length} expired goal${expired.length > 1 ? 's' : ''} cleared`,
-        'success'
-      );
-    }
+    // Both queued (offline-safe): sweep expired goal balances into total_savings
+    // and drop them from the metadata goals list.
+    updateProfile({ total_savings: totalSavings + amountToAdd });
+    updateMetadata({ savings_goals: remaining });
+    showNotification(
+      amountToAdd > 0
+        ? `${expired.length} goal${expired.length > 1 ? 's' : ''} expired — ${format(amountToAdd)} added to savings`
+        : `${expired.length} expired goal${expired.length > 1 ? 's' : ''} cleared`,
+      'success'
+    );
   };
 
   // Month-wise savings history is produced by the Wallet's month-end rollover (#4)
   // and read here for the "Monthly Savings" card below.
-  const monthlySavings = (((user?.user_metadata?.monthly_savings_history as any[]) || []) as Array<{ key: string; label: string; amount: number; date: string }>)
+  const monthlySavings = (((metadata?.monthly_savings_history as any[]) || []) as Array<{ key: string; label: string; amount: number; date: string }>)
     .slice()
     .sort((a, b) => (a.key < b.key ? 1 : -1));
 

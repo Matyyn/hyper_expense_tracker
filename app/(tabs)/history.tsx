@@ -57,7 +57,7 @@ export default function HistoryScreen() {
   const queryClient = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
 
-  const { deleteExpense, categoryMap, categories, loanRelatedExpenseIds } = useExpenseSync(
+  const { deleteExpense, updateExpenseAsync, categoryMap, categories, loanRelatedExpenseIds } = useExpenseSync(
     user?.id,
     (user?.user_metadata?.monthly_budget as number) || 0,
     (user?.user_metadata?.savings_goal as number) || 0,
@@ -255,20 +255,18 @@ export default function HistoryScreen() {
     }
     setSaving(true);
     try {
-      const { error } = await supabase
-        .from("expenses")
-        .update({
+      // Queued write — works offline and resyncs on reconnect. Optimistically
+      // patches both the current-month and this History month's caches.
+      await updateExpenseAsync(
+        editDraft.id,
+        {
           description: editDraft.description.trim(),
           amount,
           category: editDraft.category,
           source: editDraft.source || null,
-        })
-        .eq("id", editDraft.id);
-      if (error) throw error;
-      queryClient.invalidateQueries({
-        queryKey: ["expenses-history", user.id, viewYear, viewMonth],
-      });
-      queryClient.invalidateQueries({ queryKey: ["expenses", user.id] });
+        },
+        { year: viewYear, month: viewMonth }
+      );
       showNotification("Expense updated", "success");
       setEditDraft(null);
     } catch (e: any) {

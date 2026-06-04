@@ -38,6 +38,9 @@ import {
   useExpenseSync,
 } from "../../hooks/useExpenseSync";
 import { supabase } from "../../lib/supabase";
+import { isOnline } from "../../lib/online";
+import { useUserMetadata, useUpdateMetadata } from "../../hooks/useUserMetadata";
+import { SyncStatusIcon } from "../../components/SyncStatusIcon";
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -193,6 +196,8 @@ const EMPTY_DRAFT: TemplateDraft = {
 
 export default function Dashboard() {
   const { user } = useAuth();
+  const metadata = useUserMetadata();
+  const { updateMetadata } = useUpdateMetadata();
   const queryClient = useQueryClient();
   const { format, symbol } = useCurrency();
   const { colors } = useTheme();
@@ -223,8 +228,8 @@ export default function Dashboard() {
     isLoading,
   } = useExpenseSync(
     user?.id,
-    (user?.user_metadata?.monthly_budget as number) || 0,
-    (user?.user_metadata?.savings_goal as number) || 0,
+    (metadata?.monthly_budget as number) || 0,
+    (metadata?.savings_goal as number) || 0,
   );
 
   const { showNotification, history, unreadCount, markAllRead, clearHistory } =
@@ -277,7 +282,7 @@ export default function Dashboard() {
   const rolloverRanRef = useRef(false);
 
   const savedSources: Array<{name: string; budget: number}> =
-    (user?.user_metadata?.custom_sources as any[]) || [{ name: "Cash", budget: 0 }];
+    (metadata?.custom_sources as any[]) || [{ name: "Cash", budget: 0 }];
 
   const [obBudget, setObBudget] = useState("");
   const [obGoal, setObGoal] = useState("");
@@ -311,13 +316,13 @@ export default function Dashboard() {
   }, [monthlyBudget, savingsGoal]);
 
   useEffect(() => {
-    const stored = user?.user_metadata?.budget_expiry as string | undefined;
+    const stored = metadata?.budget_expiry as string | undefined;
     if (stored) {
       const d = new Date(stored);
       setExpiryMonth(d.getMonth());
       setExpiryDay(d.getDate());
     }
-  }, [user?.user_metadata?.budget_expiry]);
+  }, [metadata?.budget_expiry]);
 
   useEffect(() => {
     const all = [...commuteTemplates, ...foodTemplates, ...otherTemplates];
@@ -335,6 +340,7 @@ export default function Dashboard() {
   useEffect(() => {
     if (!user?.id || categories.length === 0) return;
     if (categories.find((c) => c.name === INCOME_CATEGORY)) return;
+    if (!isOnline()) return; // one-time backfill; runs next launch when online
     (async () => {
       await supabase.from("categories").insert([
         {
@@ -349,7 +355,7 @@ export default function Dashboard() {
     })();
   }, [user?.id, categories]);
 
-  const awaitingNewBudget = user?.user_metadata?.awaiting_new_budget === true;
+  const awaitingNewBudget = metadata?.awaiting_new_budget === true;
   const monthlyLeftover =
     monthlyBudget + totalIncomeMonthly - totalSpentMonthly;
   // While waiting for the user to start a new budget period the leftover is shown as 0
@@ -362,7 +368,7 @@ export default function Dashboard() {
   );
   const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
 
-  const storedExpiry = user?.user_metadata?.budget_expiry as string | undefined;
+  const storedExpiry = metadata?.budget_expiry as string | undefined;
   const budgetExpiryDate = storedExpiry ? new Date(storedExpiry) : endOfMonth;
   const isBudgetExpired = budgetExpiryDate < today;
   const daysUntilExpiry = Math.max(
@@ -381,9 +387,15 @@ export default function Dashboard() {
   // record it in the month-wise savings history, zero out the budget, and prompt
   // the user to start a new period (new budget + end date).
   const runRollover = async () => {
+    // Rollover reconciles against the server's period expenses; defer it until
+    // online (it re-triggers on the next launch with a connection).
+    if (!isOnline()) {
+      rolloverRanRef.current = false;
+      return;
+    }
     try {
-      const periodStart = user?.user_metadata?.budget_period_start
-        ? new Date(user.user_metadata.budget_period_start as string)
+      const periodStart = metadata?.budget_period_start
+        ? new Date(metadata.budget_period_start as string)
         : new Date(budgetExpiryDate.getFullYear(), budgetExpiryDate.getMonth(), 1);
       const { data: periodExpenses } = await supabase
         .from("expenses")
@@ -400,30 +412,23 @@ export default function Dashboard() {
         .reduce((s, e) => s + Number(e.amount), 0);
       const base =
         (profile?.monthly_budget as number | undefined) ??
-        ((user?.user_metadata?.monthly_budget as number) || 0);
+        ((metadata?.monthly_budget as number) || 0);
       const leftover = Math.max(0, base + income - spent);
 
       const monthKey = `${budgetExpiryDate.getFullYear()}-${String(budgetExpiryDate.getMonth() + 1).padStart(2, "0")}`;
       const label = `${monthNames[budgetExpiryDate.getMonth()]} ${budgetExpiryDate.getFullYear()}`;
-      const history = (user?.user_metadata?.monthly_savings_history as any[]) || [];
+      const history = (metadata?.monthly_savings_history as any[]) || [];
       const nextHistory = history.some((h) => h.key === monthKey)
         ? history
         : [...history, { key: monthKey, label, amount: leftover, date: new Date().toISOString() }];
 
-      await supabase
-        .from("profiles")
-        .update({ total_savings: totalSavings + leftover, monthly_budget: 0 })
-        .eq("id", user!.id);
-      await supabase.auth.updateUser({
-        data: {
-          monthly_budget: 0,
-          awaiting_new_budget: true,
-          last_rollover_key: storedExpiry,
-          monthly_savings_history: nextHistory,
-        },
+      updateProfile({ total_savings: totalSavings + leftover, monthly_budget: 0 });
+      updateMetadata({
+        monthly_budget: 0,
+        awaiting_new_budget: true,
+        last_rollover_key: storedExpiry,
+        monthly_savings_history: nextHistory,
       });
-      await supabase.auth.refreshSession();
-      queryClient.invalidateQueries({ queryKey: ["profile", user?.id] });
 
       setRolloverAmount(leftover);
       setShowRolloverModal(true);
@@ -444,17 +449,14 @@ export default function Dashboard() {
     const expiry = new Date(today.getFullYear(), rbExpMonth, rbExpDay, 23, 59, 59);
     setRbSaving(true);
     try {
-      await supabase.from("profiles").update({ monthly_budget: budget }).eq("id", user!.id);
-      await supabase.auth.updateUser({
-        data: {
-          monthly_budget: budget,
-          budget_expiry: expiry.toISOString(),
-          budget_period_start: new Date().toISOString(),
-          awaiting_new_budget: false,
-        },
+      // Queued (offline-safe): profile budget + metadata period fields.
+      updateProfile({ monthly_budget: budget });
+      updateMetadata({
+        monthly_budget: budget,
+        budget_expiry: expiry.toISOString(),
+        budget_period_start: new Date().toISOString(),
+        awaiting_new_budget: false,
       });
-      await supabase.auth.refreshSession();
-      queryClient.invalidateQueries({ queryKey: ["profile", user?.id] });
       setShowRolloverModal(false);
       setRbBudget("");
       rolloverRanRef.current = false;
@@ -468,13 +470,13 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!user?.id) return;
-    if (user?.user_metadata?.is_new_user === true) return;
+    if (metadata?.is_new_user === true) return;
     if (awaitingNewBudget) {
       setShowRolloverModal(true);
       return;
     }
     if (!storedExpiry || !isBudgetExpired) return;
-    if (user?.user_metadata?.last_rollover_key === storedExpiry) return;
+    if (metadata?.last_rollover_key === storedExpiry) return;
     if (rolloverRanRef.current) return;
     rolloverRanRef.current = true;
     runRollover();
@@ -532,7 +534,7 @@ export default function Dashboard() {
 
   // Category budget alerts (read from user_metadata)
   const categoryBudgets: Record<string, number> =
-    (user?.user_metadata?.category_budgets as Record<string, number>) || {};
+    (metadata?.category_budgets as Record<string, number>) || {};
   const checkCategoryAlert = (category: string, addedAmount: number) => {
     const limit = categoryBudgets[category];
     if (!limit) return;
@@ -616,22 +618,16 @@ export default function Dashboard() {
       ...old, monthly_budget: budget, savings_goal: goal,
     }));
     setShowBudgetModal(false);
-    showNotification("Saving...", "success");
 
-    try {
-      const [profileRes] = await Promise.all([
-        supabase.from('profiles').update({ monthly_budget: budget, savings_goal: goal }).eq('id', user!.id),
-        supabase.auth.updateUser({ data: { budget_expiry: expiry.toISOString(), custom_sources: cleanedSources, monthly_budget: budget, savings_goal: goal } }),
-      ]);
-      if (profileRes.error) throw profileRes.error;
-      await supabase.auth.refreshSession();
-      queryClient.invalidateQueries({ queryKey: ['profile', user?.id] });
-      showNotification("Budget settings saved", "success");
-    } catch (e: any) {
-      // Roll back optimistic update
-      queryClient.invalidateQueries({ queryKey: ['profile', user?.id] });
-      showNotification(e.message || "Could not save settings", "error");
-    }
+    // Queued (offline-safe): profile budget/goal + metadata expiry/sources.
+    updateProfile({ monthly_budget: budget, savings_goal: goal });
+    updateMetadata({
+      budget_expiry: expiry.toISOString(),
+      custom_sources: cleanedSources,
+      monthly_budget: budget,
+      savings_goal: goal,
+    });
+    showNotification("Budget settings saved", "success");
   };
 
   const openNewTemplate = (group: "commute" | "food" | "other") => {
@@ -717,7 +713,7 @@ export default function Dashboard() {
         ? foodTemplates
         : otherTemplates;
 
-  const showOnboardingGate = user?.user_metadata?.is_new_user === true;
+  const showOnboardingGate = metadata?.is_new_user === true;
 
   // Skip loan-linked expenses (borrowed Income & repayment Lending) so per-source
   // totals only reflect real user spend/income, matching the global metrics.
@@ -749,11 +745,6 @@ export default function Dashboard() {
     setObError("");
     setObSaving(true);
     try {
-      const { error: profileErr } = await supabase
-        .from('profiles')
-        .update({ monthly_budget: budget, savings_goal: Number(obGoal) || 0 })
-        .eq('id', user!.id);
-      if (profileErr) throw profileErr;
       const total = budget;
       const nonCash = obSources.filter(s => s.name !== "Cash" && s.name.trim());
       const allocated = nonCash.reduce((sum, s) => sum + (Number(s.budget) || 0), 0);
@@ -761,8 +752,17 @@ export default function Dashboard() {
         { name: "Cash", budget: Math.max(0, total - allocated) },
         ...nonCash.map(s => ({ name: s.name.trim(), budget: Number(s.budget) || 0 })),
       ];
-      await supabase.auth.updateUser({ data: { is_new_user: false, onboarding_complete: true, custom_sources: cleanedSources, monthly_budget: budget, savings_goal: Number(obGoal) || 0, budget_period_start: new Date().toISOString() } });
-      await supabase.auth.refreshSession();
+      // Queued (offline-safe): profile + metadata. Flipping is_new_user in the
+      // metadata cache optimistically dismisses the onboarding gate immediately.
+      updateProfile({ monthly_budget: budget, savings_goal: Number(obGoal) || 0 });
+      updateMetadata({
+        is_new_user: false,
+        onboarding_complete: true,
+        custom_sources: cleanedSources,
+        monthly_budget: budget,
+        savings_goal: Number(obGoal) || 0,
+        budget_period_start: new Date().toISOString(),
+      });
     } catch (e: any) {
       setObError(e.message || "Could not save settings");
     } finally {
@@ -780,12 +780,12 @@ export default function Dashboard() {
       category: customExpense.category,
       source: customExpense.source || undefined,
     });
-    supabase.auth.updateUser({ data: { is_new_user: false, onboarding_complete: true } });
+    updateMetadata({ is_new_user: false, onboarding_complete: true });
     showNotification(`Logged ${format(amount)} for ${customExpense.description}`, "success", true);
     setCustomExpense({ description: "", amount: "", category: categories[0]?.name || "Misc", source: "" });
   };
 
-  const reminderEnabled = user?.user_metadata?.reminder_enabled !== false;
+  const reminderEnabled = metadata?.reminder_enabled !== false;
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   const loggedToday = expenses.some(
@@ -987,6 +987,9 @@ export default function Dashboard() {
               </Text>
             </View>
             <View className="flex-row items-center">
+              <View className="mr-2">
+                <SyncStatusIcon />
+              </View>
               <TouchableOpacity
                 onPress={() => {
                   setShowNotifModal(true);
@@ -1085,17 +1088,25 @@ export default function Dashboard() {
                 </View>
                 <TouchableOpacity
                   onPress={async () => {
-                    const [profileRes, userRes] = await Promise.all([
-                      supabase.from('profiles').select('monthly_budget,savings_goal').eq('id', user!.id).single(),
-                      supabase.auth.getUser(),
-                    ]);
-                    const p = profileRes.data;
-                    const freshUser = userRes.data.user;
+                    // Prefer fresh server values when online; fall back to cached
+                    // profile/metadata when offline so the editor still opens.
+                    let p: { monthly_budget?: number; savings_goal?: number } | null =
+                      profile ? { monthly_budget: profile.monthly_budget, savings_goal: profile.savings_goal } : null;
+                    let sources = (metadata?.custom_sources as any[]) || [{ name: "Cash", budget: 0 }];
+                    if (isOnline()) {
+                      try {
+                        const [profileRes, userRes] = await Promise.all([
+                          supabase.from('profiles').select('monthly_budget,savings_goal').eq('id', user!.id).single(),
+                          supabase.auth.getUser(),
+                        ]);
+                        if (profileRes.data) p = profileRes.data;
+                        const freshSources = userRes.data.user?.user_metadata?.custom_sources as any[] | undefined;
+                        if (freshSources) sources = freshSources;
+                      } catch {}
+                    }
                     setNewBudget(p?.monthly_budget ? String(p.monthly_budget) : monthlyBudget ? String(monthlyBudget) : "");
                     setNewGoal(p?.savings_goal ? String(p.savings_goal) : savingsGoal ? String(savingsGoal) : "");
-                    const freshSources: Array<{name: string; budget: number}> =
-                      (freshUser?.user_metadata?.custom_sources as any[]) || [{ name: "Cash", budget: 0 }];
-                    setSourceDrafts(freshSources.map(s => ({ name: s.name, budget: s.budget ? String(s.budget) : "" })));
+                    setSourceDrafts(sources.map((s: {name: string; budget: number}) => ({ name: s.name, budget: s.budget ? String(s.budget) : "" })));
                     setShowBudgetModal(true);
                   }}
                   className="w-8 h-8 rounded-full bg-black/20 items-center justify-center active:bg-black/40"
