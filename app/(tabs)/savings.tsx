@@ -11,6 +11,12 @@ import { useTheme } from '../../components/ThemeProvider';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useUserMetadata, useUpdateMetadata } from '../../hooks/useUserMetadata';
+import { isOnline } from '../../lib/online';
+import {
+  MonthlySavingsEntry,
+  mergeMonthlySavings,
+  scanMonthlyLeftovers,
+} from '../../lib/monthlySavings';
 
 interface SavingsGoal {
   id: string;
@@ -228,11 +234,64 @@ export default function SavingsScreen() {
     );
   };
 
-  // Month-wise savings history is produced by the Wallet's month-end rollover (#4)
-  // and read here for the "Monthly Savings" card below.
-  const monthlySavings = (((metadata?.monthly_savings_history as any[]) || []) as Array<{ key: string; label: string; amount: number; date: string }>)
+  // Month-wise savings history. Entries come from two places: the Wallet's
+  // month-end rollover (origin 'rollover') and the DB scan below (origin
+  // 'backfill') which reconstructs months that closed before rollover existed.
+  const monthlySavings = (((metadata?.monthly_savings_history as any[]) || []) as MonthlySavingsEntry[])
     .slice()
     .sort((a, b) => (a.key < b.key ? 1 : -1));
+
+  // --- Backfill past months from the expenses table -------------------------
+  // Reads every expense row, folds it into per-calendar-month leftovers and adds
+  // any closed month that isn't already listed. Existing entries are never
+  // overwritten, so this is safe to re-run and never disturbs a real rollover.
+  //
+  // Deliberately does NOT touch `total_savings`: these figures are reconstructed
+  // (the DB keeps no per-month budget history, so today's budget is assumed for
+  // every past month) and that money was never actually swept into the vault.
+  const [scanning, setScanning] = useState(false);
+  const didBackfill = useRef(false);
+
+  const backfillMonthlySavings = async (manual = false) => {
+    if (!user?.id) return;
+    if (!isOnline()) {
+      if (manual) showNotification('Go online to scan past months', 'info');
+      return;
+    }
+    setScanning(true);
+    try {
+      const base = profile?.monthly_budget ?? ((metadata?.monthly_budget as number) || 0);
+      const scanned = await scanMonthlyLeftovers(user.id, base);
+      const existing = (metadata?.monthly_savings_history as MonthlySavingsEntry[]) || [];
+      // Keep only the entry fields — user_metadata rides along in the session, so
+      // the scan's spent/income/budget working values stay out of it.
+      const merged = mergeMonthlySavings(
+        existing,
+        scanned.map(({ key, label, amount, date, origin }) => ({ key, label, amount, date, origin })),
+      );
+      const added = merged.length - existing.length;
+      if (added > 0) updateMetadata({ monthly_savings_history: merged });
+      if (manual) {
+        showNotification(
+          added > 0
+            ? `${added} past month${added > 1 ? 's' : ''} added from history`
+            : 'Already up to date',
+          added > 0 ? 'success' : 'info',
+        );
+      }
+    } catch (e: any) {
+      if (manual) showNotification(e.message || 'Could not scan past months', 'error');
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  useEffect(() => {
+    if (didBackfill.current || !user?.id || !profile) return;
+    didBackfill.current = true;
+    backfillMonthlySavings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, profile]);
 
   const goalsKey = initialGoals.map(g => `${g.id}:${g.deadline ?? ''}`).join(',');
   useEffect(() => {
@@ -428,7 +487,27 @@ export default function SavingsScreen() {
 
           {/* Monthly Savings — month-wise rollover history (#4) */}
           <View className="bg-surface border border-line rounded-3xl p-5 mb-5">
-            <SectionTitle icon="archive" label="Monthly Savings" color="#a78bfa" />
+            <SectionTitle
+              icon="archive"
+              label="Monthly Savings"
+              color="#a78bfa"
+              right={
+                <TouchableOpacity
+                  onPress={() => backfillMonthlySavings(true)}
+                  disabled={scanning}
+                  className="flex-row items-center px-3 py-1.5 rounded-xl bg-app border border-line active:bg-violet-500/10"
+                >
+                  {scanning ? (
+                    <ActivityIndicator size="small" color="#a78bfa" />
+                  ) : (
+                    <>
+                      <FontAwesome name="refresh" size={10} color="#a78bfa" />
+                      <Text className="text-violet-300 text-[10px] font-bold uppercase tracking-wider ml-2">Rescan</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              }
+            />
             <View className="flex-row justify-between items-baseline mb-4">
               <Text className="text-2xl font-bold text-ink tracking-tight">{format(totalSavings)}</Text>
               <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">Total Vault</Text>
@@ -448,19 +527,32 @@ export default function SavingsScreen() {
                   className={`flex-row items-center justify-between py-3 ${idx === monthlySavings.length - 1 ? '' : 'border-b border-line'}`}
                 >
                   <View className="flex-row items-center flex-1">
-                    <View className="w-9 h-9 rounded-xl bg-emerald-500/10 items-center justify-center mr-3">
-                      <FontAwesome name="bank" size={13} color="#34d399" />
+                    <View className={`w-9 h-9 rounded-xl items-center justify-center mr-3 ${m.origin === 'backfill' ? 'bg-violet-500/10' : 'bg-emerald-500/10'}`}>
+                      <FontAwesome name="bank" size={13} color={m.origin === 'backfill' ? '#a78bfa' : '#34d399'} />
                     </View>
                     <View className="flex-1">
-                      <Text className="text-ink text-sm font-semibold">{m.label}</Text>
+                      <View className="flex-row items-center">
+                        <Text className="text-ink text-sm font-semibold">{m.label}</Text>
+                        {m.origin === 'backfill' && (
+                          <View className="ml-2 px-1.5 py-0.5 rounded-md bg-violet-500/15 border border-violet-500/30">
+                            <Text className="text-violet-300 text-[9px] font-bold uppercase tracking-wider">Estimated</Text>
+                          </View>
+                        )}
+                      </View>
                       <Text className="text-faint text-[10px] uppercase tracking-wider mt-0.5">
                         {new Date(m.date).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
                       </Text>
                     </View>
                   </View>
-                  <Text className="text-emerald-400 text-sm font-bold">+ {format(m.amount)}</Text>
+                  <Text className={`text-sm font-bold ${m.origin === 'backfill' ? 'text-violet-300' : 'text-emerald-400'}`}>+ {format(m.amount)}</Text>
                 </View>
               ))
+            )}
+            {monthlySavings.some(m => m.origin === 'backfill') && (
+              <Text className="text-faint text-[10px] leading-4 mt-3">
+                Estimated months are rebuilt from your logged expenses using your current
+                budget, and are not counted in the Total Vault.
+              </Text>
             )}
           </View>
 

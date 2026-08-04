@@ -14,6 +14,8 @@ export interface NotificationHistoryItem {
 
 interface NotificationContextProps {
   showNotification: (message: string, type?: NotificationType, addToHistory?: boolean) => void;
+  /** History + unread badge only — no toast. For events the user didn't trigger. */
+  recordNotification: (message: string, type?: NotificationType) => void;
   history: NotificationHistoryItem[];
   unreadCount: number;
   markAllRead: () => void;
@@ -35,6 +37,15 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const [history, setHistory] = useState<NotificationHistoryItem[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const recordNotification = useCallback((
+    message: string,
+    type: NotificationType = 'info',
+  ) => {
+    const id = Date.now();
+    setHistory(prev => [{ id, message, type, at: id }, ...prev].slice(0, MAX_HISTORY));
+    setUnreadCount(c => c + 1);
+  }, []);
 
   const showNotification = useCallback((
     message: string,
@@ -69,7 +80,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     'bg-stone-800 border-stone-700';
 
   return (
-    <NotificationContext.Provider value={{ showNotification, history, unreadCount, markAllRead, clearHistory }}>
+    <NotificationContext.Provider value={{ showNotification, recordNotification, history, unreadCount, markAllRead, clearHistory }}>
       {children}
       {active && (
         <Animated.View

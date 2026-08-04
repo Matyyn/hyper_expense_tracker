@@ -41,6 +41,15 @@ import { supabase } from "../../lib/supabase";
 import { isOnline } from "../../lib/online";
 import { useUserMetadata, useUpdateMetadata } from "../../hooks/useUserMetadata";
 import { SyncStatusIcon } from "../../components/SyncStatusIcon";
+import {
+  MonthlySavingsEntry,
+  leftoverOf,
+  mergeMonthlySavings,
+  monthKey,
+  monthLabel,
+  nextPeriodEnd,
+  periodEndAfter,
+} from "../../lib/monthlySavings";
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -232,8 +241,14 @@ export default function Dashboard() {
     (metadata?.savings_goal as number) || 0,
   );
 
-  const { showNotification, history, unreadCount, markAllRead, clearHistory } =
-    useNotification();
+  const {
+    showNotification,
+    recordNotification,
+    history,
+    unreadCount,
+    markAllRead,
+    clearHistory,
+  } = useNotification();
   const {
     leftoverBudget,
     burnRate,
@@ -270,16 +285,9 @@ export default function Dashboard() {
     null,
   );
 
-  // Month-end rollover (#4)
-  const [showRolloverModal, setShowRolloverModal] = useState(false);
-  const [rolloverAmount, setRolloverAmount] = useState(0);
-  const [rbBudget, setRbBudget] = useState("");
-  const [rbExpMonth, setRbExpMonth] = useState(() => new Date().getMonth());
-  const [rbExpDay, setRbExpDay] = useState(
-    () => new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate(),
-  );
-  const [rbSaving, setRbSaving] = useState(false);
+  // Month-end rollover (#4) — fully automatic, no prompt
   const rolloverRanRef = useRef(false);
+  const periodStartRanRef = useRef(false);
 
   const savedSources: Array<{name: string; budget: number}> =
     (metadata?.custom_sources as any[]) || [{ name: "Cash", budget: 0 }];
@@ -355,12 +363,9 @@ export default function Dashboard() {
     })();
   }, [user?.id, categories]);
 
-  const awaitingNewBudget = metadata?.awaiting_new_budget === true;
   const monthlyLeftover =
     monthlyBudget + totalIncomeMonthly - totalSpentMonthly;
-  // While waiting for the user to start a new budget period the leftover is shown as 0
-  // (the previous period's leftover has already been swept into savings).
-  const displayLeftover = awaitingNewBudget ? 0 : monthlyLeftover;
+  const displayLeftover = monthlyLeftover;
   const monthlyBudgetTotal = Math.max(monthlyBudget + totalIncomeMonthly, 1);
   const budgetUsedPercent = Math.min(
     100,
@@ -383,9 +388,14 @@ export default function Dashboard() {
 
 
   // --- Month-end rollover (#4) ---------------------------------------------
-  // When the budget period ends: sweep the remaining leftover into total savings,
-  // record it in the month-wise savings history, zero out the budget, and prompt
-  // the user to start a new period (new budget + end date).
+  // When a budget period ends the leftover is swept straight into total savings
+  // and the next period starts on its own — same budget, same day-of-month end
+  // date. There is no prompt: the user only ever sees the new period already
+  // running, plus an entry in the Savings tab's Monthly Savings list.
+  //
+  // Every period that closed since the last launch is swept individually, so
+  // going a few months without opening the app produces one entry per month
+  // rather than a single merged lump.
   const runRollover = async () => {
     // Rollover reconciles against the server's period expenses; defer it until
     // online (it re-triggers on the next launch with a connection).
@@ -394,94 +404,119 @@ export default function Dashboard() {
       return;
     }
     try {
-      const periodStart = metadata?.budget_period_start
-        ? new Date(metadata.budget_period_start as string)
-        : new Date(budgetExpiryDate.getFullYear(), budgetExpiryDate.getMonth(), 1);
-      const { data: periodExpenses } = await supabase
-        .from("expenses")
-        .select("amount, category")
-        .eq("user_id", user!.id)
-        .gte("created_at", periodStart.toISOString())
-        .lte("created_at", budgetExpiryDate.toISOString());
-      const rows = periodExpenses || [];
-      const spent = rows
-        .filter((e) => e.category !== INCOME_CATEGORY && e.category !== LOAN_RETURN_CATEGORY)
-        .reduce((s, e) => s + Number(e.amount), 0);
-      const income = rows
-        .filter((e) => e.category === INCOME_CATEGORY)
-        .reduce((s, e) => s + Number(e.amount), 0);
       const base =
         (profile?.monthly_budget as number | undefined) ??
         ((metadata?.monthly_budget as number) || 0);
-      const leftover = Math.max(0, base + income - spent);
+      const anchorDay = budgetExpiryDate.getDate();
 
-      const monthKey = `${budgetExpiryDate.getFullYear()}-${String(budgetExpiryDate.getMonth() + 1).padStart(2, "0")}`;
-      const label = `${monthNames[budgetExpiryDate.getMonth()]} ${budgetExpiryDate.getFullYear()}`;
-      const history = (metadata?.monthly_savings_history as any[]) || [];
-      const nextHistory = history.some((h) => h.key === monthKey)
-        ? history
-        : [...history, { key: monthKey, label, amount: leftover, date: new Date().toISOString() }];
+      let periodStart = metadata?.budget_period_start
+        ? new Date(metadata.budget_period_start as string)
+        : new Date(budgetExpiryDate.getFullYear(), budgetExpiryDate.getMonth(), 1);
+      let periodEnd = budgetExpiryDate;
 
-      updateProfile({ total_savings: totalSavings + leftover, monthly_budget: 0 });
+      // One query covering every closed period, sliced per-period in memory.
+      const { data: periodExpenses, error } = await supabase
+        .from("expenses")
+        .select("amount, category, created_at")
+        .eq("user_id", user!.id)
+        .gte("created_at", periodStart.toISOString());
+      if (error) throw error;
+      const rows = (periodExpenses || []).map((e) => ({
+        amount: Number(e.amount) || 0,
+        category: e.category as string,
+        at: new Date(e.created_at as string).getTime(),
+      }));
+
+      const existing =
+        (metadata?.monthly_savings_history as MonthlySavingsEntry[]) || [];
+      const swept: MonthlySavingsEntry[] = [];
+      // Only a real prior sweep blocks re-sweeping a month. Backfilled estimates
+      // are display-only and never moved money, so this period still owes the
+      // vault its leftover — the estimate gets replaced on merge.
+      const seen = new Set(
+        existing.filter((h) => h.origin !== "backfill").map((h) => h.key),
+      );
+      let sweptTotal = 0;
+      const now = Date.now();
+
+      // Guard bounds the walk in case of a corrupt/ancient expiry date.
+      for (let guard = 0; periodEnd.getTime() < now && guard < 240; guard++) {
+        const from = periodStart.getTime();
+        const to = periodEnd.getTime();
+        const { amount } = leftoverOf(
+          rows.filter((e) => e.at >= from && e.at <= to),
+          base,
+        );
+        const key = monthKey(periodEnd);
+        if (!seen.has(key)) {
+          seen.add(key);
+          swept.push({
+            key,
+            label: monthLabel(periodEnd),
+            amount,
+            date: periodEnd.toISOString(),
+            origin: "rollover",
+          });
+          sweptTotal += amount;
+        }
+        periodStart = new Date(to + 1);
+        periodEnd = nextPeriodEnd(periodEnd, anchorDay);
+      }
+
+      // periodStart/periodEnd now describe the period that contains today.
+      if (sweptTotal > 0) {
+        updateProfile({ total_savings: totalSavings + sweptTotal });
+      }
       updateMetadata({
-        monthly_budget: 0,
-        awaiting_new_budget: true,
+        budget_expiry: periodEnd.toISOString(),
+        budget_period_start: periodStart.toISOString(),
+        awaiting_new_budget: false,
         last_rollover_key: storedExpiry,
-        monthly_savings_history: nextHistory,
+        monthly_savings_history: mergeMonthlySavings(existing, swept),
       });
 
-      setRolloverAmount(leftover);
-      setShowRolloverModal(true);
-      if (leftover > 0) {
-        showNotification(`${format(leftover)} from last period moved to savings`, "success", true);
+      if (sweptTotal > 0) {
+        // Recorded to the bell only — no toast for a transfer the user didn't ask for.
+        recordNotification(
+          `${format(sweptTotal)} moved to savings — new budget period started`,
+          "success",
+        );
       }
     } catch {
       rolloverRanRef.current = false;
     }
   };
 
-  const handleRolloverSubmit = async () => {
-    const budget = Number(rbBudget);
-    if (!rbBudget || isNaN(budget) || budget < 1) {
-      showNotification("Enter a valid budget amount", "error");
-      return;
-    }
-    const expiry = new Date(today.getFullYear(), rbExpMonth, rbExpDay, 23, 59, 59);
-    setRbSaving(true);
-    try {
-      // Queued (offline-safe): profile budget + metadata period fields.
-      updateProfile({ monthly_budget: budget });
-      updateMetadata({
-        monthly_budget: budget,
-        budget_expiry: expiry.toISOString(),
-        budget_period_start: new Date().toISOString(),
-        awaiting_new_budget: false,
-      });
-      setShowRolloverModal(false);
-      setRbBudget("");
-      rolloverRanRef.current = false;
-      showNotification("New budget period started", "success", true);
-    } catch (e: any) {
-      showNotification(e.message || "Could not save new budget", "error");
-    } finally {
-      setRbSaving(false);
-    }
-  };
-
   useEffect(() => {
     if (!user?.id) return;
     if (metadata?.is_new_user === true) return;
-    if (awaitingNewBudget) {
-      setShowRolloverModal(true);
-      return;
-    }
     if (!storedExpiry || !isBudgetExpired) return;
     if (metadata?.last_rollover_key === storedExpiry) return;
     if (rolloverRanRef.current) return;
     rolloverRanRef.current = true;
     runRollover();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id, storedExpiry, isBudgetExpired, awaitingNewBudget]);
+  }, [user?.id, storedExpiry, isBudgetExpired]);
+
+  // Legacy recovery: users left in the old "awaiting new budget" state (their
+  // leftover was already swept, but the period was never restarted because the
+  // prompt is gone) get a period started for them on the same day-of-month.
+  useEffect(() => {
+    if (!user?.id) return;
+    if (metadata?.awaiting_new_budget !== true) return;
+    if (periodStartRanRef.current) return;
+    periodStartRanRef.current = true;
+    const anchorDay = storedExpiry
+      ? new Date(storedExpiry).getDate()
+      : endOfMonth.getDate();
+    const expiry = periodEndAfter(new Date(), anchorDay);
+    updateMetadata({
+      budget_expiry: expiry.toISOString(),
+      budget_period_start: new Date().toISOString(),
+      awaiting_new_budget: false,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, metadata?.awaiting_new_budget]);
 
   const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -1035,8 +1070,9 @@ export default function Dashboard() {
             </Animated.View>
           )}
 
-          {/* Awaiting-new-budget Banner (period ended, leftover already swept to savings) */}
-          {awaitingNewBudget && (
+          {/* No-budget Banner — periods now restart automatically, so this only
+              shows when there is genuinely no budget amount to carry forward. */}
+          {!isLoading && monthlyBudget <= 0 && (
             <Animated.View
               entering={FadeIn.duration(300)}
               className="bg-violet-500/10 border border-violet-500/30 rounded-2xl px-4 py-3 mb-5 flex-row items-center"
@@ -1046,14 +1082,14 @@ export default function Dashboard() {
               </View>
               <View className="flex-1">
                 <Text className="text-violet-300 text-sm font-semibold">
-                  Budget period ended
+                  No budget set
                 </Text>
                 <Text className="text-violet-200/70 text-xs mt-0.5">
-                  Leftover moved to savings — start a new period
+                  Set one to start tracking this period
                 </Text>
               </View>
               <TouchableOpacity
-                onPress={() => setShowRolloverModal(true)}
+                onPress={() => setShowBudgetModal(true)}
                 className="px-3 py-2 rounded-xl bg-violet-500/20 border border-violet-500/30 active:bg-violet-500/30 ml-2"
               >
                 <Text className="text-violet-300 text-xs font-bold">
@@ -2162,122 +2198,6 @@ export default function Dashboard() {
         </SafeAreaView>
       </Modal>
 
-      {/* Month-end Rollover Prompt — start a new budget period (#4) */}
-      <Modal
-        visible={showRolloverModal}
-        animationType="slide"
-        transparent={false}
-        onRequestClose={() => {}}
-      >
-        <SafeAreaView style={{ flex: 1, backgroundColor: colors.app }}>
-          <KeyboardAvoidingView
-            behavior={Platform.OS === "ios" ? "padding" : undefined}
-            style={{ flex: 1 }}
-          >
-            <ScrollView
-              keyboardShouldPersistTaps="handled"
-              contentContainerStyle={{ padding: 24, paddingBottom: 56 }}
-              showsVerticalScrollIndicator={false}
-            >
-              <View className="items-center mb-6 mt-4">
-                <View className="w-16 h-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 items-center justify-center mb-4">
-                  <FontAwesome name="refresh" size={24} color="#34d399" />
-                </View>
-                <Text className="text-2xl font-bold text-ink tracking-tight text-center">
-                  New Budget Period
-                </Text>
-                <Text className="text-muted text-sm text-center mt-2">
-                  Your previous budget period ended.
-                </Text>
-              </View>
-
-              {/* Saved-to-savings summary */}
-              <View className="bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-4 mb-6 flex-row items-center">
-                <View className="w-10 h-10 rounded-xl bg-emerald-500/15 items-center justify-center mr-3">
-                  <FontAwesome name="bank" size={15} color="#34d399" />
-                </View>
-                <View className="flex-1">
-                  <Text className="text-emerald-400 text-base font-bold tracking-tight">
-                    {format(rolloverAmount)} saved
-                  </Text>
-                  <Text className="text-muted text-xs mt-0.5">
-                    Last period's leftover moved to your savings vault
-                  </Text>
-                </View>
-              </View>
-
-              <Text className="text-emerald-400 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
-                New Monthly Budget
-              </Text>
-              <View className="bg-app rounded-2xl p-4 border border-line mb-5 flex-row items-center">
-                <Text className="text-muted text-lg font-semibold mr-3">{symbol}</Text>
-                <TextInput
-                  className="flex-1 text-ink text-xl font-bold tracking-tight"
-                  keyboardType="numeric"
-                  placeholder="0"
-                  placeholderTextColor="#78716c"
-                  value={rbBudget}
-                  onChangeText={setRbBudget}
-                />
-              </View>
-
-              <Text className="text-emerald-400 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
-                New End Date
-              </Text>
-              <Text className="text-muted text-xs mb-3 ml-1">
-                Leftover moves to savings again after this date
-              </Text>
-              <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Month</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-3">
-                {monthNames.map((m, idx) => (
-                  <TouchableOpacity
-                    key={m}
-                    onPress={() => {
-                      setRbExpMonth(idx);
-                      const maxDay = new Date(today.getFullYear(), idx + 1, 0).getDate();
-                      if (rbExpDay > maxDay) setRbExpDay(maxDay);
-                    }}
-                    className={`px-3.5 py-2 mr-2 rounded-full border ${rbExpMonth === idx ? "bg-emerald-600 border-emerald-500" : "bg-app border-line"}`}
-                  >
-                    <Text className={`text-xs font-semibold uppercase tracking-wider ${rbExpMonth === idx ? "text-white" : "text-muted"}`}>
-                      {m}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-              <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Day</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-6">
-                {Array.from(
-                  { length: new Date(today.getFullYear(), rbExpMonth + 1, 0).getDate() },
-                  (_, i) => i + 1,
-                ).map((d) => (
-                  <TouchableOpacity
-                    key={d}
-                    onPress={() => setRbExpDay(d)}
-                    className={`w-10 h-10 mr-1.5 rounded-full items-center justify-center border ${rbExpDay === d ? "bg-emerald-600 border-emerald-500" : "bg-app border-line"}`}
-                  >
-                    <Text className={`text-xs font-semibold ${rbExpDay === d ? "text-white" : "text-muted"}`}>{d}</Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-
-              <TouchableOpacity
-                onPress={handleRolloverSubmit}
-                disabled={rbSaving}
-                className="py-4 rounded-2xl bg-emerald-600 items-center active:bg-emerald-500"
-              >
-                {rbSaving ? (
-                  <ActivityIndicator color="white" />
-                ) : (
-                  <Text className="text-white text-sm font-bold uppercase tracking-wider">
-                    Start New Period
-                  </Text>
-                )}
-              </TouchableOpacity>
-            </ScrollView>
-          </KeyboardAvoidingView>
-        </SafeAreaView>
-      </Modal>
     </SafeAreaView>
   );
 }
