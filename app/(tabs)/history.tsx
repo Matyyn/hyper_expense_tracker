@@ -23,18 +23,12 @@ import { useTheme } from "../../components/ThemeProvider";
 import { INCOME_CATEGORY, useExpenseSync } from "../../hooks/useExpenseSync";
 import { useLoans } from "../../hooks/useLoans";
 import { supabase } from "../../lib/supabase";
-import {
-  SPEND_FOR_COLOR,
-  SPEND_FOR_ICON,
-  SPEND_FOR_LABEL,
-  SpendFor,
-  spendForOf,
-} from "../../lib/spendFor";
-import { SpendForBadge, SpendForPicker } from "../../components/SpendForPicker";
+import { SpendFor, spendForOf } from "../../lib/spendFor";
+import { ScopeSwitch, SpendForBadge, SpendForPicker } from "../../components/SpendForPicker";
 
 type SortMode = "newest" | "oldest" | "highest" | "lowest";
 type FilterCat = "All" | string;
-type FilterScope = "All" | SpendFor;
+type FilterScope = "all" | SpendFor;
 
 const DEFAULT_SOURCES = ["Cash"];
 
@@ -114,7 +108,7 @@ export default function HistoryScreen() {
   const [sortMode, setSortMode] = useState<SortMode>("newest");
   const [filterCat, setFilterCat] = useState<FilterCat>("All");
   const [filterSource, setFilterSource] = useState<string>("All");
-  const [filterScope, setFilterScope] = useState<FilterScope>("All");
+  const [filterScope, setFilterScope] = useState<FilterScope>("all");
   const [search, setSearch] = useState("");
   const [openDropdown, setOpenDropdown] = useState<null | 'sort' | 'category' | 'source'>(null);
 
@@ -191,7 +185,7 @@ export default function HistoryScreen() {
       if (filterCat !== "All" && e.category !== filterCat) return false;
       if (filterSource !== "All" && (e.source || "") !== filterSource) return false;
       // Loan rows carry no scope of their own and fall in with personal entries.
-      if (filterScope !== "All" && spendForOf(e) !== filterScope) return false;
+      if (filterScope !== "all" && spendForOf(e) !== filterScope) return false;
       if (q && !(e.description || "").toLowerCase().includes(q)) return false;
       return true;
     });
@@ -379,28 +373,8 @@ export default function HistoryScreen() {
         </View>
 
         {/* Scope filter — All / Self / Family */}
-        <View className="flex-row bg-surface rounded-full p-1 border border-line mb-2">
-          {(["All", "self", "family"] as const).map((scope) => {
-            const selected = filterScope === scope;
-            const tint = scope === "All" ? "#34d399" : SPEND_FOR_COLOR[scope];
-            return (
-              <TouchableOpacity
-                key={scope}
-                onPress={() => setFilterScope(scope)}
-                style={selected ? { backgroundColor: tint } : undefined}
-                className="flex-1 flex-row items-center justify-center py-2 rounded-full"
-              >
-                {scope !== "All" && (
-                  <Text className="text-[11px] mr-1.5">{SPEND_FOR_ICON[scope]}</Text>
-                )}
-                <Text
-                  className={`text-[11px] font-semibold uppercase tracking-wider ${selected ? "text-black" : "text-muted"}`}
-                >
-                  {scope === "All" ? "All" : SPEND_FOR_LABEL[scope]}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
+        <View className="mb-2">
+          <ScopeSwitch<FilterScope> value={filterScope} onChange={setFilterScope} />
         </View>
 
         {/* Dropdowns row */}

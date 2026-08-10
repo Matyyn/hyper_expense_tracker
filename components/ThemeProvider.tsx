@@ -86,7 +86,13 @@ export const ThemeProvider = ({ children }: { children: React.ReactNode }) => {
 
   return (
     <ThemeContext.Provider value={{ mode, scheme, colors, isDark: scheme === 'dark', setMode }}>
-      <View style={[{ flex: 1 }, vars(CSS_VARS[scheme])]}>{children}</View>
+      {/* backgroundColor matters: this View is the only thing behind the whole
+          navigator. Left transparent it lets the host window (white in Expo Go)
+          show through wherever a screen doesn't paint — most visibly the safe
+          area strip below the tab bar. */}
+      <View style={[{ flex: 1, backgroundColor: colors.app }, vars(CSS_VARS[scheme])]}>
+        {children}
+      </View>
     </ThemeContext.Provider>
   );
 };

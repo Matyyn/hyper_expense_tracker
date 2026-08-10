@@ -17,6 +17,7 @@ import {
   spendForOf,
   sumAmount,
 } from '../../lib/spendFor';
+import { ScopeSwitch } from '../../components/SpendForPicker';
 
 type Scope = 'all' | SpendFor;
 
@@ -229,24 +230,8 @@ export default function AnalyticsScreen() {
         </View>
 
         {/* Scope switch — re-slices every section below to Self or Family */}
-        <View className="flex-row bg-surface rounded-full p-1 border border-line mb-4">
-          {(['all', ...SPEND_FOR_VALUES] as Scope[]).map(s => {
-            const selected = scope === s;
-            const tint = s === 'all' ? '#f43f5e' : SPEND_FOR_COLOR[s];
-            return (
-              <TouchableOpacity
-                key={s}
-                onPress={() => setScope(s)}
-                style={selected ? { backgroundColor: tint } : undefined}
-                className="flex-1 flex-row items-center justify-center py-2.5 rounded-full"
-              >
-                {s !== 'all' && <Text className="text-xs mr-1.5">{SPEND_FOR_ICON[s]}</Text>}
-                <Text className={`text-[11px] font-semibold uppercase tracking-wider ${selected ? 'text-black' : 'text-muted'}`}>
-                  {s === 'all' ? 'Everything' : SPEND_FOR_LABEL[s]}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
+        <View className="mb-4">
+          <ScopeSwitch<Scope> value={scope} onChange={setScope} allLabel="Everything" allColor="#f43f5e" />
         </View>
 
         <View className="flex-row mb-5 -mx-1">
