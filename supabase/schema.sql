@@ -79,8 +79,16 @@ create table public.expenses (
   amount numeric not null,
   description text not null,
   category text not null,
-  is_weekend boolean not null default false
+  is_weekend boolean not null default false,
+  -- payment source (Cash, JazzCash, ...) — free text, matches user_metadata.custom_sources
+  source text,
+  -- who the expense was for; see migration 20260810000000_expense_spend_for.sql
+  spend_for text not null default 'self'
+    constraint expenses_spend_for_check check (spend_for in ('self', 'family'))
 );
+
+create index if not exists expenses_user_spend_for_idx
+  on public.expenses (user_id, spend_for);
 
 -- Enable Row Level Security
 alter table public.profiles enable row level security;

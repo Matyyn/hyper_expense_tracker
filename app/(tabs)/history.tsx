@@ -23,9 +23,18 @@ import { useTheme } from "../../components/ThemeProvider";
 import { INCOME_CATEGORY, useExpenseSync } from "../../hooks/useExpenseSync";
 import { useLoans } from "../../hooks/useLoans";
 import { supabase } from "../../lib/supabase";
+import {
+  SPEND_FOR_COLOR,
+  SPEND_FOR_ICON,
+  SPEND_FOR_LABEL,
+  SpendFor,
+  spendForOf,
+} from "../../lib/spendFor";
+import { SpendForBadge, SpendForPicker } from "../../components/SpendForPicker";
 
 type SortMode = "newest" | "oldest" | "highest" | "lowest";
 type FilterCat = "All" | string;
+type FilterScope = "All" | SpendFor;
 
 const DEFAULT_SOURCES = ["Cash"];
 
@@ -35,6 +44,7 @@ interface EditDraft {
   amount: string;
   category: string;
   source: string;
+  spend_for: SpendFor;
 }
 
 const monthNames = [
@@ -104,6 +114,7 @@ export default function HistoryScreen() {
   const [sortMode, setSortMode] = useState<SortMode>("newest");
   const [filterCat, setFilterCat] = useState<FilterCat>("All");
   const [filterSource, setFilterSource] = useState<string>("All");
+  const [filterScope, setFilterScope] = useState<FilterScope>("All");
   const [search, setSearch] = useState("");
   const [openDropdown, setOpenDropdown] = useState<null | 'sort' | 'category' | 'source'>(null);
 
@@ -179,10 +190,12 @@ export default function HistoryScreen() {
     return mergedItems.filter((e) => {
       if (filterCat !== "All" && e.category !== filterCat) return false;
       if (filterSource !== "All" && (e.source || "") !== filterSource) return false;
+      // Loan rows carry no scope of their own and fall in with personal entries.
+      if (filterScope !== "All" && spendForOf(e) !== filterScope) return false;
       if (q && !(e.description || "").toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [mergedItems, filterCat, filterSource, search]);
+  }, [mergedItems, filterCat, filterSource, filterScope, search]);
 
   const sorted = [...filtered].sort((a, b) => {
     switch (sortMode) {
@@ -243,6 +256,7 @@ export default function HistoryScreen() {
       amount: String(exp.amount),
       category: exp.category || "",
       source: exp.source || "",
+      spend_for: spendForOf(exp),
     });
   };
 
@@ -264,6 +278,7 @@ export default function HistoryScreen() {
           amount,
           category: editDraft.category,
           source: editDraft.source || null,
+          spend_for: editDraft.spend_for,
         },
         { year: viewYear, month: viewMonth }
       );
@@ -361,6 +376,31 @@ export default function HistoryScreen() {
               <FontAwesome name="close" size={12} color="#78716c" />
             </TouchableOpacity>
           )}
+        </View>
+
+        {/* Scope filter — All / Self / Family */}
+        <View className="flex-row bg-surface rounded-full p-1 border border-line mb-2">
+          {(["All", "self", "family"] as const).map((scope) => {
+            const selected = filterScope === scope;
+            const tint = scope === "All" ? "#34d399" : SPEND_FOR_COLOR[scope];
+            return (
+              <TouchableOpacity
+                key={scope}
+                onPress={() => setFilterScope(scope)}
+                style={selected ? { backgroundColor: tint } : undefined}
+                className="flex-1 flex-row items-center justify-center py-2 rounded-full"
+              >
+                {scope !== "All" && (
+                  <Text className="text-[11px] mr-1.5">{SPEND_FOR_ICON[scope]}</Text>
+                )}
+                <Text
+                  className={`text-[11px] font-semibold uppercase tracking-wider ${selected ? "text-black" : "text-muted"}`}
+                >
+                  {scope === "All" ? "All" : SPEND_FOR_LABEL[scope]}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
 
         {/* Dropdowns row */}
@@ -537,6 +577,7 @@ export default function HistoryScreen() {
                               <Text className="text-muted text-[9px] font-semibold uppercase tracking-wider">{exp.source}</Text>
                             </View>
                           ) : null}
+                          {!isIncome && <SpendForBadge value={spendForOf(exp)} />}
                         </View>
                       </View>
                     </View>
@@ -673,6 +714,14 @@ export default function HistoryScreen() {
                 </TouchableOpacity>
               ))}
             </ScrollView>
+
+            {editDraft?.category !== INCOME_CATEGORY && (
+              <SpendForPicker
+                value={editDraft?.spend_for ?? "self"}
+                onChange={(next) => setEditDraft((d) => d && { ...d, spend_for: next })}
+                label="Spent for"
+              />
+            )}
 
             <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
               Source

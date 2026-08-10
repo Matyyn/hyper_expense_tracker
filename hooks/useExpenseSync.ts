@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import { isWeekend } from 'date-fns';
 import { newId } from '../lib/ids';
 import { runWrite } from '../lib/runWrite';
+import { DEFAULT_SPEND_FOR, SpendFor, splitBySpendFor, sumAmount } from '../lib/spendFor';
 
 export const INCOME_CATEGORY = 'Income';
 export const LENDING_CATEGORY = 'Lending';
@@ -17,6 +18,7 @@ export interface Expense {
   is_weekend: boolean;
   created_at?: string;
   source?: string;
+  spend_for?: SpendFor;
 }
 
 export interface NewExpensePayload {
@@ -25,6 +27,7 @@ export interface NewExpensePayload {
   category: string;
   date?: string;
   source?: string;
+  spend_for?: SpendFor;
 }
 
 export interface Profile {
@@ -305,6 +308,7 @@ export function useExpenseSync(userId: string | undefined, budgetFallback = 0, g
       is_weekend: isWeekend(date),
       created_at: date.toISOString(),
       source: payload.source ?? null,
+      spend_for: payload.spend_for ?? DEFAULT_SPEND_FOR,
     };
   };
 
@@ -355,11 +359,25 @@ export function useExpenseSync(userId: string | undefined, budgetFallback = 0, g
     return map;
   }, [displayExpenses]);
 
+  // Self / Family split of this month's real spend. Built off displayExpenses so
+  // it lines up with displayTotalMonthly (no Income, no loan bookkeeping rows).
+  const { selfExpenses, familyExpenses, selfTotalMonthly, familyTotalMonthly } = useMemo(() => {
+    const { self, family } = splitBySpendFor(displayExpenses);
+    return {
+      selfExpenses: self,
+      familyExpenses: family,
+      selfTotalMonthly: sumAmount(self),
+      familyTotalMonthly: sumAmount(family),
+    };
+  }, [displayExpenses]);
+
   return {
     expenses,
     incomeEntries,
     allExpenses,
     displayExpenses,
+    selfExpenses,
+    familyExpenses,
     weeklyExpenses,
     profile,
     categories,
@@ -381,6 +399,8 @@ export function useExpenseSync(userId: string | undefined, budgetFallback = 0, g
       savingsThisMonth,
       totalSpentMonthly,
       displayTotalMonthly,
+      selfTotalMonthly,
+      familyTotalMonthly,
       totalIncomeMonthly,
       netMonthly,
       savingsGoal,

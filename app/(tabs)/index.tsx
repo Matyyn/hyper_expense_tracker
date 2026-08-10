@@ -39,6 +39,8 @@ import {
 } from "../../hooks/useExpenseSync";
 import { supabase } from "../../lib/supabase";
 import { isOnline } from "../../lib/online";
+import { SpendFor } from "../../lib/spendFor";
+import { SpendForPicker } from "../../components/SpendForPicker";
 import { useUserMetadata, useUpdateMetadata } from "../../hooks/useUserMetadata";
 import { SyncStatusIcon } from "../../components/SyncStatusIcon";
 import {
@@ -312,6 +314,11 @@ export default function Dashboard() {
     category: categories[0]?.name || "Misc",
     source: "",
   });
+
+  // Who the entry is for. Kept separate for the manual form vs Quick Log so a
+  // one-off family purchase doesn't silently re-tag every later quick tap.
+  const [spendFor, setSpendFor] = useState<SpendFor>("self");
+  const [quickSpendFor, setQuickSpendFor] = useState<SpendFor>("self");
 
   const today = new Date();
   const [selectedDay, setSelectedDay] = useState(today.getDate());
@@ -599,9 +606,15 @@ export default function Dashboard() {
       if (original && original.amount !== amount) {
         updateTemplate({ id: templateId, amount });
       }
-      addExpense({ amount, description: title, category, source: templateSources[templateId] || savedSources[0]?.name || 'Cash' });
+      addExpense({
+        amount,
+        description: title,
+        category,
+        source: templateSources[templateId] || savedSources[0]?.name || 'Cash',
+        spend_for: quickSpendFor,
+      });
       showNotification(
-        `Logged ${format(amount)} for ${title}`,
+        `Logged ${format(amount)} for ${title}${quickSpendFor === "family" ? " (Family)" : ""}`,
         "success",
         true,
       );
@@ -620,11 +633,14 @@ export default function Dashboard() {
       category,
       date: isToday ? undefined : getSelectedDateISO(),
       source: activeSource || undefined,
+      // Income isn't "spent for" anyone — always books against self so the
+      // Self/Family split stays a pure breakdown of outgoing money.
+      spend_for: logMode === "income" ? "self" : spendFor,
     });
     showNotification(
       logMode === "income"
         ? `Income ${format(amount)} logged`
-        : `Logged ${format(amount)} for ${customExpense.description}`,
+        : `Logged ${format(amount)} for ${customExpense.description}${spendFor === "family" ? " (Family)" : ""}`,
       "success",
       true,
     );
@@ -1434,6 +1450,9 @@ export default function Dashboard() {
                 ))}
               </ScrollView>
             )}
+            {logMode === "expense" && (
+              <SpendForPicker value={spendFor} onChange={setSpendFor} label="Spent for" />
+            )}
             {savedSources.length > 1 && (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-3">
                 {savedSources.map(src => (
@@ -1496,6 +1515,14 @@ export default function Dashboard() {
                   </TouchableOpacity>
                 ))}
               </View>
+            </View>
+
+            {/* Scope applies to every tap in this grid until changed. */}
+            <View className="flex-row items-center justify-between mb-3">
+              <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest ml-1">
+                Spent for
+              </Text>
+              <SpendForPicker value={quickSpendFor} onChange={setQuickSpendFor} compact />
             </View>
 
             <View className="flex-row flex-wrap -mx-1">

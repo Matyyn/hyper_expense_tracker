@@ -12,8 +12,9 @@ Built with **Expo (SDK 54)**, **React Native 0.81**, **React 19**, **Supabase**,
 - **Budgets with month-end rollover** — set a monthly budget and period end date; on expiry, leftover is swept into total savings, recorded in a month-wise history, and you're prompted to start a new period.
 - **Savings goals** — multiple named goals with targets, deadlines, and contributions; expired goals sweep their balance into total savings automatically.
 - **Loans** — track money **lent** and **borrowed**, with partial payments, auto-settlement, due dates, and overdue flags. Loans are linked to expense/income entries so budgets and analytics stay accurate.
-- **Analytics** — weekly/monthly spend charts, per-category breakdowns, and category budget limits with alerts.
-- **History** — browse any month, edit or delete past entries.
+- **Self / Family spending** — tag every expense as personal or family (in the entry form, on Quick Log, and when editing), then compare the two.
+- **Analytics** — weekly/monthly spend charts, per-category breakdowns, and category budget limits with alerts. An **Everything / Self / Family** switch re-slices the whole screen, with dedicated Self-vs-Family totals and a per-category split.
+- **History** — browse any month, filter by Self / Family, edit or delete past entries.
 - **Offline mode + auto-resync** — view everything and make changes with no connection; queued writes survive an app restart and replay in order when you reconnect. See [Offline architecture](#offline-architecture).
 - **Theming** — Light / Dark / System, persisted per-device and synced to the account.
 - **Multi-currency** — display amounts in your preferred currency.
@@ -127,7 +128,7 @@ npm run web        # run in the browser
 | Table / view | Purpose |
 | --- | --- |
 | `profiles` | per-user budget, savings goal, total savings |
-| `expenses` | all entries: spend, `Income`, `Lending`, `Loan Return` |
+| `expenses` | all entries: spend, `Income`, `Lending`, `Loan Return`. `spend_for` scopes a row to `self` or `family` |
 | `categories` | user categories (icon, color, order) |
 | `quick_templates` | one-tap logging presets, grouped (commute/food/custom) |
 | `loans` | money lent/borrowed, linked to an expense entry |

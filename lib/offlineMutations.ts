@@ -2,6 +2,7 @@ import type { QueryKey } from '@tanstack/react-query';
 import { supabase } from './supabase';
 import { queryClient } from './queryClient';
 import { isOnline } from './online';
+import { DEFAULT_SPEND_FOR } from './spendFor';
 
 // ============================================================================
 // Offline mutation registry
@@ -47,6 +48,17 @@ function reconcile(keys: QueryKey[]) {
   for (const key of keys) queryClient.invalidateQueries({ queryKey: key });
   // history is keyed by [.., year, month]; invalidate the whole family
   queryClient.invalidateQueries({ queryKey: ['expenses-history'] });
+}
+
+// PostgREST reports an unknown column as PGRST204 against its schema cache.
+// Turn that into an actionable message instead of a raw driver error, the same
+// way the quick_templates delete policy gap is surfaced below.
+function assertNoMissingColumn(error: any) {
+  if (error?.code === 'PGRST204' && String(error?.message || '').includes('spend_for')) {
+    throw new Error(
+      'Could not save the Self/Family tag. Run the latest database migration (expenses.spend_for).'
+    );
+  }
 }
 
 function startOfMonth(): Date {
@@ -137,9 +149,11 @@ export function registerOfflineMutations() {
           category: v.category,
           is_weekend: v.is_weekend,
           source: v.source ?? null,
+          spend_for: v.spend_for ?? DEFAULT_SPEND_FOR,
           created_at: v.created_at,
         },
       ]);
+      assertNoMissingColumn(error);
       if (error) throw error;
     },
     onMutate: (v: any) => {
@@ -151,6 +165,7 @@ export function registerOfflineMutations() {
         is_weekend: v.is_weekend,
         created_at: v.created_at,
         source: v.source ?? null,
+        spend_for: v.spend_for ?? DEFAULT_SPEND_FOR,
       });
     },
     onError: (e, v: any) => {
@@ -182,6 +197,7 @@ export function registerOfflineMutations() {
   queryClient.setMutationDefaults(['updateExpense'], {
     mutationFn: async (v: any) => {
       const { error } = await supabase.from('expenses').update(v.updates).eq('id', v.id);
+      assertNoMissingColumn(error);
       if (error) throw error;
     },
     onMutate: (v: any) => {

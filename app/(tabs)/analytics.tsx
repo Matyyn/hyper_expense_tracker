@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, ScrollView, useWindowDimensions, ActivityIndicator, RefreshControl, Modal, KeyboardAvoidingView, Platform, TouchableOpacity, TextInput, Pressable } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -8,6 +8,17 @@ import { useCurrency } from '../../components/CurrencyProvider';
 import { useNotification } from '../../components/NotificationProvider';
 import { useQueryClient } from '@tanstack/react-query';
 import { useUserMetadata, useUpdateMetadata } from '../../hooks/useUserMetadata';
+import {
+  SPEND_FOR_COLOR,
+  SPEND_FOR_ICON,
+  SPEND_FOR_LABEL,
+  SPEND_FOR_VALUES,
+  SpendFor,
+  spendForOf,
+  sumAmount,
+} from '../../lib/spendFor';
+
+type Scope = 'all' | SpendFor;
 
 function SectionTitle({ icon, label, color = '#34d399', right }: { icon: React.ComponentProps<typeof FontAwesome>['name']; label: string; color?: string; right?: React.ReactNode }) {
   return (
@@ -36,7 +47,19 @@ export default function AnalyticsScreen() {
     (user?.user_metadata?.monthly_budget as number) || 0,
     (user?.user_metadata?.savings_goal as number) || 0,
   );
-  const { totalSpentMonthly, totalIncomeMonthly, monthlyBudget, displayTotalMonthly } = metrics;
+  const { monthlyBudget } = metrics;
+
+  // Every section below reads the scoped lists, so the whole screen re-slices
+  // to Self or Family from one control. The Self vs Family card is the one
+  // exception — it always compares the full month.
+  const [scope, setScope] = useState<Scope>('all');
+  const inScope = (e: any) => scope === 'all' || spendForOf(e) === scope;
+  const scopedDisplay = useMemo(() => displayExpenses.filter(inScope), [displayExpenses, scope]);
+  const scopedAll = useMemo(() => allExpenses.filter(inScope), [allExpenses, scope]);
+  const scopedWeekly = useMemo(() => weeklyExpenses.filter(inScope), [weeklyExpenses, scope]);
+  const scopedTotal = useMemo(() => sumAmount(scopedDisplay), [scopedDisplay]);
+  const scopeLabel = scope === 'all' ? 'All' : SPEND_FOR_LABEL[scope];
+  const scopeTint = scope === 'all' ? '#f43f5e' : SPEND_FOR_COLOR[scope];
 
   const initialBudgets: Record<string, number> = (metadata?.category_budgets as Record<string, number>) || {};
   const [showBudgetsModal, setShowBudgetsModal] = useState(false);
@@ -62,7 +85,7 @@ export default function AnalyticsScreen() {
     setShowBudgetsModal(false);
   };
 
-  const categoryTotals = displayExpenses.reduce((acc, exp) => {
+  const categoryTotals = scopedDisplay.reduce((acc, exp) => {
     const amount = Number(exp.amount) || 0;
     if (amount > 0) {
       const cat = exp.category || 'Uncategorized';
@@ -82,7 +105,7 @@ export default function AnalyticsScreen() {
     limit: initialBudgets[cat],
   })).sort((a, b) => b.amount - a.amount);
 
-  const sourceTotals = allExpenses.reduce((acc, exp) => {
+  const sourceTotals = scopedAll.reduce((acc, exp) => {
     const amount = Number(exp.amount) || 0;
     const src = (exp as any).source;
     if (!src || amount <= 0) return acc;
@@ -102,20 +125,25 @@ export default function AnalyticsScreen() {
   const SOURCE_COLORS = ['#818cf8', '#34d399', '#fbbf24', '#f43f5e', '#a78bfa', '#38bdf8'];
 
   const todayMidnight = new Date().setHours(0, 0, 0, 0);
-  const firstSpend = displayExpenses
-    .filter(e => e.created_at)
-    .map(e => new Date(e.created_at!).setHours(0, 0, 0, 0))
-    .reduce((min, d) => d < min ? d : min, Infinity);
-  const daysSinceFirst = firstSpend < Infinity
-    ? Math.floor((todayMidnight - firstSpend) / 86400000) + 1
-    : 0;
-  const dailyAvg = daysSinceFirst > 0 ? displayTotalMonthly / daysSinceFirst : 0;
+  // Average over the days actually elapsed since the first logged spend, so an
+  // account opened mid-month isn't penalised for the days before it existed.
+  const dailyAvgOf = (rows: typeof displayExpenses) => {
+    const firstSpend = rows
+      .filter(e => e.created_at)
+      .map(e => new Date(e.created_at!).setHours(0, 0, 0, 0))
+      .reduce((min, d) => d < min ? d : min, Infinity);
+    const days = firstSpend < Infinity
+      ? Math.floor((todayMidnight - firstSpend) / 86400000) + 1
+      : 0;
+    return days > 0 ? sumAmount(rows) / days : 0;
+  };
+  const dailyAvg = dailyAvgOf(scopedDisplay);
 
   const today = new Date();
   const currentWeekOfMonth = Math.ceil(today.getDate() / 7);
 
   const weeklyMonthData = [0, 0, 0, 0];
-  displayExpenses.forEach(exp => {
+  scopedDisplay.forEach(exp => {
     if (exp.created_at) {
       const d = new Date(exp.created_at);
       if (d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear()) {
@@ -128,12 +156,55 @@ export default function AnalyticsScreen() {
 
   const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const weekDayData = new Array(7).fill(0);
-  weeklyExpenses.forEach(exp => {
+  scopedWeekly.forEach(exp => {
     if (exp.created_at) weekDayData[new Date(exp.created_at).getDay()] += Number(exp.amount);
   });
   const maxDay = Math.max(...weekDayData, 1);
 
-  const budgetUsedPct = Math.min(100, (displayTotalMonthly / Math.max(monthlyBudget, 1)) * 100);
+  const budgetUsedPct = Math.min(100, (scopedTotal / Math.max(monthlyBudget, 1)) * 100);
+
+  // ---- Self vs Family comparison (always whole-month, ignores `scope`) ----
+  const spendForStats = useMemo(() => {
+    const rowsOf = (s: SpendFor) => displayExpenses.filter(e => spendForOf(e) === s);
+    const stats = SPEND_FOR_VALUES.map(s => {
+      const rows = rowsOf(s);
+      return {
+        key: s,
+        label: SPEND_FOR_LABEL[s],
+        icon: SPEND_FOR_ICON[s],
+        color: SPEND_FOR_COLOR[s],
+        amount: sumAmount(rows),
+        count: rows.length,
+        dailyAvg: dailyAvgOf(rows),
+        topCategory: Object.entries(
+          rows.reduce((acc, e) => {
+            const cat = e.category || 'Uncategorized';
+            acc[cat] = (acc[cat] || 0) + (Number(e.amount) || 0);
+            return acc;
+          }, {} as Record<string, number>)
+        ).sort((a, b) => b[1] - a[1])[0]?.[0],
+      };
+    });
+    const combined = stats.reduce((sum, s) => sum + s.amount, 0);
+    return stats.map(s => ({ ...s, share: combined > 0 ? (s.amount / combined) * 100 : 0, combined }));
+  }, [displayExpenses]);
+
+  const totalBothScopes = spendForStats[0]?.combined || 0;
+
+  // Per-category self/family split — where the two scopes actually diverge.
+  const categorySplit = useMemo(() => {
+    const map: Record<string, { self: number; family: number }> = {};
+    displayExpenses.forEach(e => {
+      const amount = Number(e.amount) || 0;
+      if (amount <= 0) return;
+      const cat = e.category || 'Uncategorized';
+      if (!map[cat]) map[cat] = { self: 0, family: 0 };
+      map[cat][spendForOf(e)] += amount;
+    });
+    return Object.entries(map)
+      .map(([name, v]) => ({ name, ...v, total: v.self + v.family }))
+      .sort((a, b) => b.total - a.total);
+  }, [displayExpenses]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -152,20 +223,48 @@ export default function AnalyticsScreen() {
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#34d399" />}
       >
-        <View className="mb-6 mt-1">
+        <View className="mb-4 mt-1">
           <Text className="text-3xl font-bold text-ink tracking-tight">Analytics</Text>
           <Text className="text-rose-400 mt-1 text-[11px] font-semibold tracking-widest uppercase">Spending Insights</Text>
+        </View>
+
+        {/* Scope switch — re-slices every section below to Self or Family */}
+        <View className="flex-row bg-surface rounded-full p-1 border border-line mb-4">
+          {(['all', ...SPEND_FOR_VALUES] as Scope[]).map(s => {
+            const selected = scope === s;
+            const tint = s === 'all' ? '#f43f5e' : SPEND_FOR_COLOR[s];
+            return (
+              <TouchableOpacity
+                key={s}
+                onPress={() => setScope(s)}
+                style={selected ? { backgroundColor: tint } : undefined}
+                className="flex-1 flex-row items-center justify-center py-2.5 rounded-full"
+              >
+                {s !== 'all' && <Text className="text-xs mr-1.5">{SPEND_FOR_ICON[s]}</Text>}
+                <Text className={`text-[11px] font-semibold uppercase tracking-wider ${selected ? 'text-black' : 'text-muted'}`}>
+                  {s === 'all' ? 'Everything' : SPEND_FOR_LABEL[s]}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
 
         <View className="flex-row mb-5 -mx-1">
           <View className="flex-1 mx-1 bg-surface border border-line rounded-3xl p-4">
             <View className="flex-row items-center mb-2">
-              <View className="w-6 h-6 rounded-md bg-rose-500/10 items-center justify-center mr-2">
-                <FontAwesome name="dollar" size={10} color="#f43f5e" />
+              <View className="w-6 h-6 rounded-md items-center justify-center mr-2" style={{ backgroundColor: `${scopeTint}1a` }}>
+                <FontAwesome name="dollar" size={10} color={scopeTint} />
               </View>
-              <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">Total</Text>
+              <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">
+                {scope === 'all' ? 'Total' : `${scopeLabel} Total`}
+              </Text>
             </View>
-            <Text className="text-rose-400 text-lg font-bold tracking-tight">{format(displayTotalMonthly)}</Text>
+            <Text className="text-lg font-bold tracking-tight" style={{ color: scopeTint }}>{format(scopedTotal)}</Text>
+            {scope !== 'all' && totalBothScopes > 0 && (
+              <Text className="text-faint text-[10px] font-semibold uppercase tracking-widest mt-1">
+                {Math.round((scopedTotal / totalBothScopes) * 100)}% of {format(totalBothScopes)}
+              </Text>
+            )}
           </View>
           <View className="flex-1 mx-1 bg-surface border border-line rounded-3xl p-4">
             <View className="flex-row items-center mb-2">
@@ -178,10 +277,102 @@ export default function AnalyticsScreen() {
           </View>
         </View>
 
+        {/* Self vs Family — always the whole month, regardless of the scope switch */}
+        <View className="bg-surface border border-line rounded-3xl p-5 mb-5">
+          <SectionTitle icon="users" label="Self vs Family" color={SPEND_FOR_COLOR.family} />
+          {totalBothScopes === 0 ? (
+            <View className="py-6 items-center">
+              <Text className="text-muted text-sm font-semibold text-center">Nothing logged yet</Text>
+              <Text className="text-faint text-[11px] text-center mt-1.5 uppercase tracking-widest">
+                Tag expenses as Self or Family to compare
+              </Text>
+            </View>
+          ) : (
+            <>
+              {/* Share bar */}
+              <View className="flex-row h-3 rounded-full overflow-hidden mb-4 bg-app">
+                {spendForStats.map(s => (
+                  s.share > 0 ? (
+                    <View key={s.key} style={{ width: `${s.share}%`, backgroundColor: s.color }} />
+                  ) : null
+                ))}
+              </View>
+
+              <View className="flex-row -mx-1 mb-1">
+                {spendForStats.map(s => (
+                  <View key={s.key} className="flex-1 mx-1 bg-app border border-line rounded-2xl p-3.5">
+                    <View className="flex-row items-center mb-2">
+                      <Text className="text-sm mr-1.5">{s.icon}</Text>
+                      <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">{s.label}</Text>
+                    </View>
+                    <Text className="text-lg font-bold tracking-tight" style={{ color: s.color }}>
+                      {format(s.amount)}
+                    </Text>
+                    <Text className="text-faint text-[10px] font-semibold uppercase tracking-widest mt-1">
+                      {Math.round(s.share)}% · {s.count} {s.count === 1 ? 'entry' : 'entries'}
+                    </Text>
+                    <View className="h-px bg-line my-2.5" />
+                    <Text className="text-muted text-[10px] font-semibold uppercase tracking-widest">Daily avg</Text>
+                    <Text className="text-ink text-sm font-bold tracking-tight mt-0.5">{format(s.dailyAvg)}</Text>
+                    <Text className="text-muted text-[10px] font-semibold uppercase tracking-widest mt-2">Top category</Text>
+                    <Text className="text-ink text-xs font-semibold mt-0.5" numberOfLines={1}>
+                      {s.topCategory ? `${categoryMap[s.topCategory]?.icon || '💸'} ${s.topCategory}` : '—'}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            </>
+          )}
+        </View>
+
+        {/* Where the two scopes diverge, category by category */}
+        {categorySplit.length > 0 && (
+          <View className="bg-surface border border-line rounded-3xl p-5 mb-5">
+            <SectionTitle icon="columns" label="Category Split" color={SPEND_FOR_COLOR.self} />
+            <View className="flex-row items-center mb-4">
+              {SPEND_FOR_VALUES.map(s => (
+                <View key={s} className="flex-row items-center mr-4">
+                  <View className="w-2.5 h-2.5 rounded-full mr-1.5" style={{ backgroundColor: SPEND_FOR_COLOR[s] }} />
+                  <Text className="text-muted text-[10px] font-semibold uppercase tracking-widest">
+                    {SPEND_FOR_LABEL[s]}
+                  </Text>
+                </View>
+              ))}
+            </View>
+            {categorySplit.map((cat, idx) => (
+              <View key={cat.name} className={idx === categorySplit.length - 1 ? '' : 'mb-4'}>
+                <View className="flex-row justify-between items-center mb-2">
+                  <View className="flex-row items-center flex-1">
+                    <Text className="text-base mr-2">{categoryMap[cat.name]?.icon || '💸'}</Text>
+                    <Text className="text-ink text-sm font-semibold" numberOfLines={1}>{cat.name}</Text>
+                  </View>
+                  <Text className="text-ink text-sm font-bold ml-2">{format(cat.total)}</Text>
+                </View>
+                <View className="flex-row h-1.5 rounded-full overflow-hidden bg-app mb-1.5">
+                  {cat.self > 0 && (
+                    <View style={{ width: `${(cat.self / cat.total) * 100}%`, backgroundColor: SPEND_FOR_COLOR.self }} />
+                  )}
+                  {cat.family > 0 && (
+                    <View style={{ width: `${(cat.family / cat.total) * 100}%`, backgroundColor: SPEND_FOR_COLOR.family }} />
+                  )}
+                </View>
+                <View className="flex-row justify-between">
+                  <Text className="text-[10px] font-semibold" style={{ color: SPEND_FOR_COLOR.self }}>
+                    {format(cat.self)}
+                  </Text>
+                  <Text className="text-[10px] font-semibold" style={{ color: SPEND_FOR_COLOR.family }}>
+                    {format(cat.family)}
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
+
         <View className="bg-surface border border-line rounded-3xl p-5 mb-5">
           <SectionTitle
             icon="pie-chart"
-            label="Category Breakdown"
+            label={scope === 'all' ? 'Category Breakdown' : `${scopeLabel} Categories`}
             color="#f43f5e"
             right={(
               <TouchableOpacity onPress={() => setShowBudgetsModal(true)} className="px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/30 rounded-full">
@@ -350,7 +541,11 @@ export default function AnalyticsScreen() {
         </View>
 
         <View className="bg-surface border border-line rounded-3xl p-5 mb-5">
-          <SectionTitle icon="tachometer" label="Budget Utilization" color="#f43f5e" />
+          <SectionTitle
+            icon="tachometer"
+            label={scope === 'all' ? 'Budget Utilization' : `Budget Utilization · ${scopeLabel}`}
+            color="#f43f5e"
+          />
           <View className="flex-row justify-between items-baseline mb-3">
             <Text className="text-4xl font-bold text-ink tracking-tight">{Math.round(budgetUsedPct)}%</Text>
             <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">Used</Text>
@@ -359,7 +554,7 @@ export default function AnalyticsScreen() {
             <View className={`h-full rounded-full ${budgetUsedPct >= 90 ? 'bg-rose-500' : budgetUsedPct >= 70 ? 'bg-amber-500' : 'bg-emerald-500'}`} style={{ width: `${budgetUsedPct}%` }} />
           </View>
           <View className="flex-row justify-between">
-            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">Spent {format(displayTotalMonthly)}</Text>
+            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">Spent {format(scopedTotal)}</Text>
             <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">of {format(monthlyBudget)}</Text>
           </View>
         </View>
