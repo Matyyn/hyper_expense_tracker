@@ -88,9 +88,11 @@ export default function ModalScreen() {
           title="Wallet Dashboard"
           body="Your command center. The hero card shows your monthly leftover (budget + income − spend) and expiry countdown. Use the pencil icon to set Monthly Budget, Savings Goal, and Payment Sources."
           tips={[
-            { icon: '›', text: 'Toggle Expense / Income to log either type' },
+            { icon: '›', text: 'Toggle Expense / Income / Split to log either type or an IOU' },
+            { icon: '›', text: 'Split tracks who owes you and what you owe — kept out of your budget' },
             { icon: '›', text: 'Pick a past date from the calendar pill to backfill missed entries' },
             { icon: '›', text: 'Tap a Quick Log template for one-tap recurring expenses' },
+            { icon: '›', text: 'Divide your budget between Self and Family in Wallet Settings' },
           ]}
         />
 

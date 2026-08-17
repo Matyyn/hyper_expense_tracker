@@ -62,6 +62,19 @@ export default function AnalyticsScreen() {
   const scopeLabel = scope === 'all' ? 'All' : SPEND_FOR_LABEL[scope];
   const scopeTint = scope === 'all' ? '#f43f5e' : SPEND_FOR_COLOR[scope];
 
+  // Optional Self/Family allocations set in Wallet Settings. Absent for anyone
+  // who never saved a split, so every read falls back to the whole budget.
+  const spendForAlloc =
+    (metadata?.spend_for_budgets as { self?: number; family?: number } | undefined) ?? {};
+  // Budget the current scope is measured against. Scoping the numerator without
+  // scoping this too made the utilization card ignore the switch entirely. A
+  // configured allocation is honoured even when it's 0 — falling back to the
+  // full budget there would flatter a scope the user deliberately gave nothing.
+  const scopeAlloc = scope === 'all' ? undefined : spendForAlloc[scope];
+  const scopeBudget = Number.isFinite(Number(scopeAlloc))
+    ? Number(scopeAlloc)
+    : monthlyBudget;
+
   const initialBudgets: Record<string, number> = (metadata?.category_budgets as Record<string, number>) || {};
   const [showBudgetsModal, setShowBudgetsModal] = useState(false);
   const [budgetDrafts, setBudgetDrafts] = useState<Record<string, string>>({});
@@ -141,7 +154,9 @@ export default function AnalyticsScreen() {
   const dailyAvg = dailyAvgOf(scopedDisplay);
 
   const today = new Date();
-  const currentWeekOfMonth = Math.ceil(today.getDate() / 7);
+  // Clamped to 4 to match the bucketing below: days 29-31 fall in W4, so without
+  // the clamp this returns 5 late in the month and no bar reads as current.
+  const currentWeekOfMonth = Math.min(Math.ceil(today.getDate() / 7), 4);
 
   const weeklyMonthData = [0, 0, 0, 0];
   scopedDisplay.forEach(exp => {
@@ -162,7 +177,7 @@ export default function AnalyticsScreen() {
   });
   const maxDay = Math.max(...weekDayData, 1);
 
-  const budgetUsedPct = Math.min(100, (scopedTotal / Math.max(monthlyBudget, 1)) * 100);
+  const budgetUsedPct = Math.min(100, (scopedTotal / Math.max(scopeBudget, 1)) * 100);
 
   // ---- Self vs Family comparison (always whole-month, ignores `scope`) ----
   const spendForStats = useMemo(() => {
@@ -191,6 +206,7 @@ export default function AnalyticsScreen() {
   }, [displayExpenses]);
 
   const totalBothScopes = spendForStats[0]?.combined || 0;
+
 
   // Per-category self/family split — where the two scopes actually diverge.
   const categorySplit = useMemo(() => {
@@ -296,6 +312,22 @@ export default function AnalyticsScreen() {
                     <Text className="text-faint text-[10px] font-semibold uppercase tracking-widest mt-1">
                       {Math.round(s.share)}% · {s.count} {s.count === 1 ? 'entry' : 'entries'}
                     </Text>
+                    {Number(spendForAlloc[s.key]) > 0 && (
+                      <>
+                        <Text className="text-faint text-[10px] font-semibold uppercase tracking-widest mt-1.5">
+                          {`of ${format(Number(spendForAlloc[s.key]))} allocated`}
+                        </Text>
+                        <View className="h-1.5 rounded-full bg-app border border-line overflow-hidden mt-1.5">
+                          <View
+                            className="h-full rounded-full"
+                            style={{
+                              width: `${Math.min(100, (s.amount / Number(spendForAlloc[s.key])) * 100)}%`,
+                              backgroundColor: s.color,
+                            }}
+                          />
+                        </View>
+                      </>
+                    )}
                     <View className="h-px bg-line my-2.5" />
                     <Text className="text-muted text-[10px] font-semibold uppercase tracking-widest">Daily avg</Text>
                     <Text className="text-ink text-sm font-bold tracking-tight mt-0.5">{format(s.dailyAvg)}</Text>
@@ -400,7 +432,7 @@ export default function AnalyticsScreen() {
                       <View className="h-full rounded-full" style={{ width: `${pctOfLimit ?? cat.percentage}%`, backgroundColor: overLimit ? '#f43f5e' : cat.color }} />
                     </View>
                     {cat.limit ? (
-                      <Text className="text-muted text-[10px] font-semibold w-20 text-right">{Math.round(pctOfLimit!)}% of {cat.limit >= 100 ? `${(cat.limit / 1000).toFixed(1)}k` : cat.limit}</Text>
+                      <Text className="text-muted text-[10px] font-semibold w-20 text-right">{Math.round(pctOfLimit!)}% of {cat.limit >= 1000 ? `${(cat.limit / 1000).toFixed(1)}k` : cat.limit}</Text>
                     ) : (
                       <Text className="text-muted text-xs font-semibold w-10 text-right">{Math.round(cat.percentage)}%</Text>
                     )}
@@ -441,7 +473,7 @@ export default function AnalyticsScreen() {
                 <FontAwesome name="line-chart" size={12} color="#f43f5e" />
               </View>
               <Text className="text-ink text-base font-bold tracking-tight">
-                {weekChartView === 'weekly' ? "This Week" : "Monthly Weeks"}
+                {weekChartView === 'weekly' ? "This Week" : "Weekly Breakdown"}
               </Text>
             </View>
             <View className="flex-row bg-app rounded-full p-1 border border-line">
@@ -468,7 +500,7 @@ export default function AnalyticsScreen() {
                   return (
                     <View key={idx} className="items-center flex-1" style={{ height: '100%' }}>
                       <Text className="text-muted text-[10px] font-semibold mb-1.5" style={{ minHeight: 14 }} numberOfLines={1}>
-                        {amount > 0 ? (amount >= 100 ? `${(amount / 1000).toFixed(1)}k` : Math.round(amount)) : ''}
+                        {amount > 0 ? (amount >= 1000 ? `${(amount / 1000).toFixed(1)}k` : Math.round(amount)) : ''}
                       </Text>
                       <View className="flex-1 w-7 bg-stone-800/60 rounded-t-xl overflow-hidden justify-end">
                         <View className={`w-full rounded-t-xl ${isCurrent ? 'bg-rose-500' : 'bg-emerald-600/70'}`} style={{ height: `${barH}%` }} />
@@ -494,7 +526,7 @@ export default function AnalyticsScreen() {
                   return (
                     <View key={idx} className="items-center flex-1 mx-1" style={{ height: '100%' }}>
                       <Text className="text-muted text-[10px] font-semibold mb-1.5" style={{ minHeight: 14 }} numberOfLines={1}>
-                        {!isFuture && amount > 0 ? (amount >= 100 ? `${(amount / 1000).toFixed(1)}k` : Math.round(amount)) : ''}
+                        {!isFuture && amount > 0 ? (amount >= 1000 ? `${(amount / 1000).toFixed(1)}k` : Math.round(amount)) : ''}
                       </Text>
                       <View className={`flex-1 w-full rounded-t-2xl overflow-hidden justify-end ${isFuture ? 'bg-stone-800/20 border border-line' : 'bg-stone-800/50'}`}>
                         {isFuture ? (
@@ -516,7 +548,7 @@ export default function AnalyticsScreen() {
                   const isFuture = weekNum > currentWeekOfMonth;
                   return (
                     <Text key={idx} className={`flex-1 text-center text-[11px] font-semibold mx-1 ${isCurrent ? 'text-rose-400' : isFuture ? 'text-faint' : 'text-muted'}`}>
-                      Week {weekNum}
+                      W{weekNum}
                     </Text>
                   );
                 })}
@@ -540,7 +572,7 @@ export default function AnalyticsScreen() {
           </View>
           <View className="flex-row justify-between">
             <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">Spent {format(scopedTotal)}</Text>
-            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">of {format(monthlyBudget)}</Text>
+            <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">of {format(scopeBudget)}</Text>
           </View>
         </View>
       </ScrollView>

@@ -39,8 +39,20 @@ import {
 } from "../../hooks/useExpenseSync";
 import { supabase } from "../../lib/supabase";
 import { isOnline } from "../../lib/online";
-import { SpendFor } from "../../lib/spendFor";
-import { SpendForPicker } from "../../components/SpendForPicker";
+import {
+  SPEND_FOR_COLOR,
+  SPEND_FOR_ICON,
+  SPEND_FOR_LABEL,
+  SPEND_FOR_VALUES,
+  SpendFor,
+} from "../../lib/spendFor";
+import {
+  SPLITWISE_COLOR,
+  SplitwiseEntry,
+  readSplitwiseEntries,
+} from "../../lib/splitwise";
+import { SegmentOption, Segmented, SpendForPicker } from "../../components/SpendForPicker";
+import { SplitwiseTracker } from "../../components/SplitwiseTracker";
 import { useUserMetadata, useUpdateMetadata } from "../../hooks/useUserMetadata";
 import { SyncStatusIcon } from "../../components/SyncStatusIcon";
 import {
@@ -205,6 +217,17 @@ const EMPTY_DRAFT: TemplateDraft = {
   group_name: "commute",
 };
 
+type LogMode = "expense" | "income" | "splitwise";
+
+// Three segments have to share the card width, so no icons and a short "Split"
+// label — the panel below the toggle explains itself. Split gets violet so it
+// never reads as emerald (money in) or rose (money out).
+const LOG_MODE_OPTIONS: SegmentOption<LogMode>[] = [
+  { key: "expense", label: "Expense", color: "#f43f5e" },
+  { key: "income", label: "Income", color: "#059669" },
+  { key: "splitwise", label: "Split", color: SPLITWISE_COLOR.owes_you },
+];
+
 export default function Dashboard() {
   const { user } = useAuth();
   const metadata = useUserMetadata();
@@ -275,7 +298,7 @@ export default function Dashboard() {
     "commute",
   );
   const [reminderDismissed, setReminderDismissed] = useState(false);
-  const [logMode, setLogMode] = useState<"expense" | "income">("expense");
+  const [logMode, setLogMode] = useState<LogMode>("expense");
   const [chartView, setChartView] = useState<"weekly" | "monthly">("weekly");
   const [expiryMonth, setExpiryMonth] = useState(() => new Date().getMonth());
   const [expiryDay, setExpiryDay] = useState(() =>
@@ -293,6 +316,13 @@ export default function Dashboard() {
 
   const savedSources: Array<{name: string; budget: number}> =
     (metadata?.custom_sources as any[]) || [{ name: "Cash", budget: 0 }];
+
+  // Splitwise ledger. Read fresh from the metadata cache every render, so the
+  // tracker's read-modify-write always builds on the newest array rather than a
+  // snapshot captured earlier. Nothing here feeds the budget.
+  const splitwiseEntries = readSplitwiseEntries(metadata);
+  const persistSplitwise = (next: SplitwiseEntry[]) =>
+    updateMetadata({ splitwise_entries: next });
 
   const [obBudget, setObBudget] = useState("");
   const [obGoal, setObGoal] = useState("");
@@ -315,10 +345,15 @@ export default function Dashboard() {
     source: "",
   });
 
-  // Who the entry is for. Kept separate for the manual form vs Quick Log so a
-  // one-off family purchase doesn't silently re-tag every later quick tap.
+  // Who the manual entry is for. Quick Log has no picker — those taps stay
+  // one-tap and fall back to the default scope in buildExpenseVars.
   const [spendFor, setSpendFor] = useState<SpendFor>("self");
-  const [quickSpendFor, setQuickSpendFor] = useState<SpendFor>("self");
+
+  // Self/Family split of the monthly budget (Wallet Settings), plus the modal's
+  // first error banner.
+  const [selfAllocInput, setSelfAllocInput] = useState("");
+  const [familyAllocInput, setFamilyAllocInput] = useState("");
+  const [settingsError, setSettingsError] = useState("");
 
   const today = new Date();
   const [selectedDay, setSelectedDay] = useState(today.getDate());
@@ -611,10 +646,11 @@ export default function Dashboard() {
         description: title,
         category,
         source: templateSources[templateId] || savedSources[0]?.name || 'Cash',
-        spend_for: quickSpendFor,
+        // No spend_for: Quick Log has no scope picker, so buildExpenseVars
+        // stamps DEFAULT_SPEND_FOR and the default stays in one place.
       });
       showNotification(
-        `Logged ${format(amount)} for ${title}${quickSpendFor === "family" ? " (Family)" : ""}`,
+        `Logged ${format(amount)} for ${title}`,
         "success",
         true,
       );
@@ -623,8 +659,12 @@ export default function Dashboard() {
   };
 
   const handleCustomEntry = () => {
+    // Splitwise submits through SplitwiseTracker, which replaces this form
+    // entirely — guarded here too so an IOU can never reach the expenses table.
+    if (logMode === "splitwise") return;
     if (!customExpense.description || !customExpense.amount) return;
     const amount = Number(customExpense.amount);
+    if (!Number.isFinite(amount) || amount <= 0) return;
     const category =
       logMode === "income" ? INCOME_CATEGORY : customExpense.category;
     addExpense({
@@ -653,9 +693,46 @@ export default function Dashboard() {
     });
   };
 
+  // Seed the Self/Family inputs. An absent spend_for_budgets key (every user
+  // before this feature) prefills as all-self so the form opens already valid.
+  const prefillAllocations = (budgetStr: string) => {
+    const stored = metadata?.spend_for_budgets as
+      | { self?: number; family?: number }
+      | undefined;
+    const budget = Number(budgetStr) || 0;
+    setSelfAllocInput(String(stored?.self ?? budget));
+    setFamilyAllocInput(String(stored?.family ?? 0));
+    setSettingsError("");
+  };
+
+  const closeBudgetModal = () => {
+    setShowBudgetModal(false);
+    setSettingsError("");
+  };
+
   const handleSaveSettings = async () => {
     const budget = Number(newBudget) || 0;
     const goal = Number(newGoal) || 0;
+    const selfAlloc = Number(selfAllocInput) || 0;
+    const familyAlloc = Number(familyAllocInput) || 0;
+
+    // Validate before anything is written, so a rejected save leaves the modal
+    // open and the cache untouched. `budget` is the raw entered value — never
+    // metrics.monthlyBudget, which is inflated by borrowedThisMonth and would
+    // make the sum unreachable in any month with an outstanding borrow.
+    if (selfAlloc < 0 || familyAlloc < 0) {
+      setSettingsError("Allocations can't be negative");
+      return;
+    }
+    // Compared in integer cents to dodge float drift (0.1 + 0.2 !== 0.3).
+    if (Math.round((selfAlloc + familyAlloc) * 100) !== Math.round(budget * 100)) {
+      setSettingsError(
+        `Self + Family must equal ${format(budget)} — currently ${format(selfAlloc + familyAlloc)}`,
+      );
+      return;
+    }
+    setSettingsError("");
+
     const expiry = new Date(today.getFullYear(), expiryMonth, expiryDay, 23, 59, 59);
     const nonCash = sourceDrafts.filter(s => s.name.trim() && s.name !== "Cash");
     const allocated = nonCash.reduce((sum, s) => sum + (Number(s.budget) || 0), 0);
@@ -668,7 +745,7 @@ export default function Dashboard() {
     queryClient.setQueryData(['profile', user?.id], (old: any) => ({
       ...old, monthly_budget: budget, savings_goal: goal,
     }));
-    setShowBudgetModal(false);
+    closeBudgetModal();
 
     // Queued (offline-safe): profile budget/goal + metadata expiry/sources.
     updateProfile({ monthly_budget: budget, savings_goal: goal });
@@ -677,6 +754,7 @@ export default function Dashboard() {
       custom_sources: cleanedSources,
       monthly_budget: budget,
       savings_goal: goal,
+      spend_for_budgets: { self: selfAlloc, family: familyAlloc },
     });
     showNotification("Budget settings saved", "success");
   };
@@ -1105,7 +1183,10 @@ export default function Dashboard() {
                 </Text>
               </View>
               <TouchableOpacity
-                onPress={() => setShowBudgetModal(true)}
+                onPress={() => {
+                  prefillAllocations(newBudget);
+                  setShowBudgetModal(true);
+                }}
                 className="px-3 py-2 rounded-xl bg-violet-500/20 border border-violet-500/30 active:bg-violet-500/30 ml-2"
               >
                 <Text className="text-violet-300 text-xs font-bold">
@@ -1156,9 +1237,14 @@ export default function Dashboard() {
                         if (freshSources) sources = freshSources;
                       } catch {}
                     }
-                    setNewBudget(p?.monthly_budget ? String(p.monthly_budget) : monthlyBudget ? String(monthlyBudget) : "");
+                    const budgetStr = p?.monthly_budget ? String(p.monthly_budget) : monthlyBudget ? String(monthlyBudget) : "";
+                    setNewBudget(budgetStr);
                     setNewGoal(p?.savings_goal ? String(p.savings_goal) : savingsGoal ? String(savingsGoal) : "");
                     setSourceDrafts(sources.map((s: {name: string; budget: number}) => ({ name: s.name, budget: s.budget ? String(s.budget) : "" })));
+                    // Explicit call rather than an effect on showBudgetModal:
+                    // this handler is async and sets newBudget mid-await, so
+                    // effect ordering here is easy to get subtly wrong.
+                    prefillAllocations(budgetStr);
                     setShowBudgetModal(true);
                   }}
                   className="w-8 h-8 rounded-full bg-black/20 items-center justify-center active:bg-black/40"
@@ -1399,94 +1485,97 @@ export default function Dashboard() {
 
           {/* Add Entry */}
           <View className="bg-surface border border-line rounded-3xl p-5 mb-3">
-            <View className="flex-row items-center justify-between mb-4">
-              <View className="flex-row bg-app rounded-full p-1 border border-line">
+            {/* Three segments need the full row, so the date pill moved to its
+                own line below. It's meaningless for a Splitwise IOU. */}
+            <View className="mb-3">
+              <Segmented
+                options={LOG_MODE_OPTIONS}
+                value={logMode}
+                onChange={setLogMode}
+                fullWidth
+              />
+            </View>
+            {logMode !== "splitwise" && (
+              <View className="flex-row justify-end mb-3">
                 <TouchableOpacity
-                  onPress={() => setLogMode("expense")}
-                  className={`px-3.5 py-1.5 rounded-full ${logMode === "expense" ? "bg-rose-500/90" : ""}`}
+                  onPress={() => setShowDateModal(true)}
+                  className={`flex-row items-center px-3 py-1.5 rounded-full border ${isToday ? "bg-stone-800/50 border-line" : "bg-amber-500/10 border-amber-500/30"}`}
                 >
-                  <Text className={`text-[11px] font-semibold uppercase tracking-wider ${logMode === "expense" ? "text-white" : "text-muted"}`}>
-                    − Expense
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => setLogMode("income")}
-                  className={`px-3.5 py-1.5 rounded-full ${logMode === "income" ? "bg-emerald-600" : ""}`}
-                >
-                  <Text className={`text-[11px] font-semibold uppercase tracking-wider ${logMode === "income" ? "text-white" : "text-muted"}`}>
-                    + Income
+                  <FontAwesome name="calendar" size={10} color={isToday ? "#a8a29e" : "#fbbf24"} />
+                  <Text className={`text-[11px] font-semibold ml-2 ${isToday ? "text-muted" : "text-amber-400"}`}>
+                    {isToday ? "Today" : `${monthNames[selectedMonth]} ${selectedDay}`}
                   </Text>
                 </TouchableOpacity>
               </View>
-              <TouchableOpacity
-                onPress={() => setShowDateModal(true)}
-                className={`flex-row items-center px-3 py-1.5 rounded-full border ${isToday ? "bg-stone-800/50 border-line" : "bg-amber-500/10 border-amber-500/30"}`}
-              >
-                <FontAwesome name="calendar" size={10} color={isToday ? "#a8a29e" : "#fbbf24"} />
-                <Text className={`text-[11px] font-semibold ml-2 ${isToday ? "text-muted" : "text-amber-400"}`}>
-                  {isToday ? "Today" : `${monthNames[selectedMonth]} ${selectedDay}`}
-                </Text>
-              </TouchableOpacity>
-            </View>
-            <TextInput
-              placeholder={logMode === "income" ? "Source of income" : "What did you spend on?"}
-              placeholderTextColor="#78716c"
-              value={customExpense.description}
-              onChangeText={text => setCustomExpense(prev => ({ ...prev, description: text }))}
-              className="bg-app text-ink text-sm px-4 py-3.5 rounded-2xl mb-3 border border-line"
-            />
-            {logMode === "expense" && (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-3">
-                {categories.filter(c => c.name !== INCOME_CATEGORY).map(cat => (
-                  <TouchableOpacity
-                    key={cat.id}
-                    onPress={() => setCustomExpense(prev => ({ ...prev, category: cat.name }))}
-                    className={`px-3.5 py-2 mr-2 rounded-full border ${customExpense.category === cat.name ? "bg-emerald-600 border-emerald-500" : "bg-app border-line"}`}
-                  >
-                    <Text className={`text-xs font-semibold ${customExpense.category === cat.name ? "text-white" : "text-muted"}`}>
-                      {cat.icon} {cat.name}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
             )}
-            {logMode === "expense" && (
-              <SpendForPicker value={spendFor} onChange={setSpendFor} label="Spent for" />
-            )}
-            {savedSources.length > 1 && (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-3">
-                {savedSources.map(src => (
-                  <TouchableOpacity
-                    key={src.name}
-                    onPress={() => setActiveSource(src.name)}
-                    className={`px-3 py-1.5 mr-2 rounded-full border ${activeSource === src.name ? "bg-faint border-stone-500" : "bg-app border-line"}`}
-                  >
-                    <Text className={`text-xs font-semibold ${activeSource === src.name ? "text-white" : "text-muted"}`}>
-                      {src.name}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            )}
-            <View className="flex-row items-center bg-app rounded-2xl px-4 py-3 border border-line mb-3">
-              <Text className="text-muted text-base font-semibold mr-2">{symbol}</Text>
-              <TextInput
-                placeholder="0"
-                placeholderTextColor="#78716c"
-                keyboardType="numeric"
-                value={customExpense.amount}
-                onChangeText={text => setCustomExpense(prev => ({ ...prev, amount: text }))}
-                className="flex-1 text-ink font-bold text-lg"
+            {logMode === "splitwise" ? (
+              <SplitwiseTracker
+                entries={splitwiseEntries}
+                onPersist={persistSplitwise}
               />
-            </View>
-            <BounceCard
-              onPress={handleCustomEntry}
-              className={`py-3.5 rounded-2xl items-center ${logMode === "income" ? "bg-emerald-600 active:bg-emerald-500" : "bg-rose-500 active:bg-rose-400"}`}
-            >
-              <Text className="text-white text-sm font-bold uppercase tracking-wider">
-                {logMode === "income" ? "Add Income" : "Add Expense"}
-              </Text>
-            </BounceCard>
+            ) : (
+              <>
+                <TextInput
+                  placeholder={logMode === "income" ? "Source of income" : "What did you spend on?"}
+                  placeholderTextColor="#78716c"
+                  value={customExpense.description}
+                  onChangeText={text => setCustomExpense(prev => ({ ...prev, description: text }))}
+                  className="bg-app text-ink text-sm px-4 py-3.5 rounded-2xl mb-3 border border-line"
+                />
+                {logMode === "expense" && (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-3">
+                    {categories.filter(c => c.name !== INCOME_CATEGORY).map(cat => (
+                      <TouchableOpacity
+                        key={cat.id}
+                        onPress={() => setCustomExpense(prev => ({ ...prev, category: cat.name }))}
+                        className={`px-3.5 py-2 mr-2 rounded-full border ${customExpense.category === cat.name ? "bg-emerald-600 border-emerald-500" : "bg-app border-line"}`}
+                      >
+                        <Text className={`text-xs font-semibold ${customExpense.category === cat.name ? "text-white" : "text-muted"}`}>
+                          {cat.icon} {cat.name}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                )}
+                {logMode === "expense" && (
+                  <SpendForPicker value={spendFor} onChange={setSpendFor} label="Spent for" />
+                )}
+                {savedSources.length > 1 && (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-3">
+                    {savedSources.map(src => (
+                      <TouchableOpacity
+                        key={src.name}
+                        onPress={() => setActiveSource(src.name)}
+                        className={`px-3 py-1.5 mr-2 rounded-full border ${activeSource === src.name ? "bg-faint border-stone-500" : "bg-app border-line"}`}
+                      >
+                        <Text className={`text-xs font-semibold ${activeSource === src.name ? "text-white" : "text-muted"}`}>
+                          {src.name}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                )}
+                <View className="flex-row items-center bg-app rounded-2xl px-4 py-3 border border-line mb-3">
+                  <Text className="text-muted text-base font-semibold mr-2">{symbol}</Text>
+                  <TextInput
+                    placeholder="0"
+                    placeholderTextColor="#78716c"
+                    keyboardType="numeric"
+                    value={customExpense.amount}
+                    onChangeText={text => setCustomExpense(prev => ({ ...prev, amount: text }))}
+                    className="flex-1 text-ink font-bold text-lg"
+                  />
+                </View>
+                <BounceCard
+                  onPress={handleCustomEntry}
+                  className={`py-3.5 rounded-2xl items-center ${logMode === "income" ? "bg-emerald-600 active:bg-emerald-500" : "bg-rose-500 active:bg-rose-400"}`}
+                >
+                  <Text className="text-white text-sm font-bold uppercase tracking-wider">
+                    {logMode === "income" ? "Add Income" : "Add Expense"}
+                  </Text>
+                </BounceCard>
+              </>
+            )}
           </View>
 
           {/* Quick Log */}
@@ -1515,14 +1604,6 @@ export default function Dashboard() {
                   </TouchableOpacity>
                 ))}
               </View>
-            </View>
-
-            {/* Scope applies to every tap in this grid until changed. */}
-            <View className="flex-row items-center justify-between mb-3">
-              <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest ml-1">
-                Spent for
-              </Text>
-              <SpendForPicker value={quickSpendFor} onChange={setQuickSpendFor} compact />
             </View>
 
             <View className="flex-row flex-wrap -mx-1">
@@ -1714,7 +1795,7 @@ export default function Dashboard() {
         visible={showBudgetModal}
         animationType="slide"
         transparent={false}
-        onRequestClose={() => setShowBudgetModal(false)}
+        onRequestClose={closeBudgetModal}
       >
         <View style={{ flex: 1, backgroundColor: colors.app }}>
           <View style={{ flex: 1, backgroundColor: colors.app }}>
@@ -1726,7 +1807,7 @@ export default function Dashboard() {
             <View className="flex-row items-center justify-between mb-6 mt-2">
               <Text className="text-2xl font-bold text-ink tracking-tight">Wallet Settings</Text>
               <TouchableOpacity
-                onPress={() => setShowBudgetModal(false)}
+                onPress={closeBudgetModal}
                 className="w-10 h-10 rounded-full bg-elevated items-center justify-center active:bg-faint"
               >
                 <FontAwesome name="times" size={16} color="#a8a29e" />
@@ -1744,9 +1825,72 @@ export default function Dashboard() {
                 className="flex-1 text-ink text-xl font-bold tracking-tight"
                 keyboardType="numeric"
                 value={newBudget}
-                onChangeText={setNewBudget}
+                onChangeText={text => {
+                  setNewBudget(text);
+                  if (settingsError) setSettingsError("");
+                }}
               />
             </View>
+
+            <Text className="text-emerald-400 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
+              Budget Split
+            </Text>
+            <Text className="text-muted text-xs mb-3 ml-1">
+              Self + Family must add up to your monthly budget.
+            </Text>
+            <View className="flex-row gap-3 mb-2">
+              {SPEND_FOR_VALUES.map(scope => {
+                const isSelf = scope === "self";
+                const value = isSelf ? selfAllocInput : familyAllocInput;
+                const setValue = isSelf ? setSelfAllocInput : setFamilyAllocInput;
+                return (
+                  <View
+                    key={scope}
+                    className="flex-1 bg-app rounded-2xl px-4 py-3 border border-line"
+                  >
+                    <Text
+                      className="text-[11px] font-semibold uppercase tracking-widest mb-1"
+                      style={{ color: SPEND_FOR_COLOR[scope] }}
+                    >
+                      {SPEND_FOR_ICON[scope]} {SPEND_FOR_LABEL[scope]}
+                    </Text>
+                    <View className="flex-row items-center">
+                      <Text className="text-muted text-sm font-semibold mr-2">
+                        {symbol}
+                      </Text>
+                      <TextInput
+                        className="flex-1 text-ink text-base font-bold tracking-tight"
+                        keyboardType="numeric"
+                        value={value}
+                        onChangeText={text => {
+                          setValue(text);
+                          if (settingsError) setSettingsError("");
+                        }}
+                      />
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+            {(() => {
+              const remainder =
+                (Number(newBudget) || 0) -
+                (Number(selfAllocInput) || 0) -
+                (Number(familyAllocInput) || 0);
+              const balanced = Math.round(remainder * 100) === 0;
+              return (
+                <Text
+                  className={`text-[11px] font-semibold uppercase tracking-widest mb-5 ml-1 ${balanced ? "text-muted" : "text-rose-400"}`}
+                >
+                  {balanced
+                    ? "Fully allocated"
+                    : remainder > 0
+                      ? `Unallocated ${format(remainder)}`
+                      : `Over by ${format(-remainder)}`}
+                </Text>
+              );
+            })()}
+
             <Text className="text-emerald-400 text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">
               Monthly Savings Goal
             </Text>
@@ -1940,9 +2084,14 @@ export default function Dashboard() {
                 </View>
               </View>
             </View>
+            {settingsError ? (
+              <View style={{ backgroundColor: "#1a0a0a", borderRadius: 12, padding: 12, marginBottom: 16, borderWidth: 1, borderColor: "#7f1d1d" }}>
+                <Text style={{ color: "#f87171", fontSize: 13, fontWeight: "600" }}>{settingsError}</Text>
+              </View>
+            ) : null}
             <View className="flex-row gap-3">
               <TouchableOpacity
-                onPress={() => setShowBudgetModal(false)}
+                onPress={closeBudgetModal}
                 className="flex-1 py-4 rounded-2xl bg-elevated items-center"
               >
                 <Text className="text-ink text-sm font-semibold uppercase tracking-wider">
