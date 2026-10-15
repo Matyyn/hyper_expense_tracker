@@ -14,9 +14,12 @@ import { useUserMetadata, useUpdateMetadata } from '../../hooks/useUserMetadata'
 import { isOnline } from '../../lib/online';
 import {
   MonthlySavingsEntry,
+  allocationOf,
   mergeMonthlySavings,
   scanMonthlyLeftovers,
+  withSplit,
 } from '../../lib/monthlySavings';
+import { SPEND_FOR_COLOR, SPEND_FOR_ICON, SPEND_FOR_LABEL, SPEND_FOR_VALUES, SpendFor } from '../../lib/spendFor';
 
 interface SavingsGoal {
   id: string;
@@ -35,6 +38,18 @@ interface GoalDraft {
 }
 
 const EMPTY_DRAFT: GoalDraft = { name: '', target: '', current: '0', deadline: '' };
+
+interface MonthDraft {
+  key: string;
+  label: string;
+  self: string;
+  family: string;
+}
+
+// Entries written before the Self/Family split have no shares yet; until a
+// Rescan fills them in, the whole amount reads as Self.
+const selfShare = (m: MonthlySavingsEntry) => m.self ?? m.amount;
+const familyShare = (m: MonthlySavingsEntry) => m.family ?? 0;
 const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 interface LoanDraft {
@@ -261,22 +276,32 @@ export default function SavingsScreen() {
     setScanning(true);
     try {
       const base = profile?.monthly_budget ?? ((metadata?.monthly_budget as number) || 0);
-      const scanned = await scanMonthlyLeftovers(user.id, base);
-      const existing = (metadata?.monthly_savings_history as MonthlySavingsEntry[]) || [];
+      const alloc = allocationOf(
+        metadata?.spend_for_budgets as { self?: number; family?: number } | undefined,
+        base,
+      );
+      const { months: scanned, firstFamilyKey } = await scanMonthlyLeftovers(user.id, base, alloc);
+      const scannedByKey = new Map(scanned.map(m => [m.key, m]));
+      const stored = (metadata?.monthly_savings_history as MonthlySavingsEntry[]) || [];
+      // Entries from before the Self/Family split get their shares from the scan.
+      const existing = stored.map(m => withSplit(m, scannedByKey.get(m.key), firstFamilyKey));
+      const split = existing.filter((m, i) => m !== stored[i]).length;
       // Keep only the entry fields — user_metadata rides along in the session, so
       // the scan's spent/income/budget working values stay out of it.
       const merged = mergeMonthlySavings(
         existing,
-        scanned.map(({ key, label, amount, date, origin }) => ({ key, label, amount, date, origin })),
+        scanned.map(({ key, label, amount, date, origin, self, family }) => ({ key, label, amount, date, origin, self, family })),
       );
       const added = merged.length - existing.length;
-      if (added > 0) updateMetadata({ monthly_savings_history: merged });
+      if (added > 0 || split > 0) updateMetadata({ monthly_savings_history: merged });
       if (manual) {
         showNotification(
           added > 0
             ? `${added} past month${added > 1 ? 's' : ''} added from history`
-            : 'Already up to date',
-          added > 0 ? 'success' : 'info',
+            : split > 0
+              ? `Self / Family split added to ${split} month${split > 1 ? 's' : ''}`
+              : 'Already up to date',
+          added > 0 || split > 0 ? 'success' : 'info',
         );
       }
     } catch (e: any) {
@@ -292,6 +317,58 @@ export default function SavingsScreen() {
     backfillMonthlySavings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id, profile]);
+
+  // All-time Self / Family totals across every month listed below, estimates
+  // included — they sum the list, which is not the same thing as the vault.
+  const allTimeSelf = monthlySavings.reduce((sum, m) => sum + selfShare(m), 0);
+  const allTimeFamily = monthlySavings.reduce((sum, m) => sum + familyShare(m), 0);
+  const signed = (n: number) => (n < 0 ? `− ${format(-n)}` : format(n));
+
+  // --- Edit a past month ---------------------------------------------------
+  const [monthDraft, setMonthDraft] = useState<MonthDraft | null>(null);
+
+  const openMonthEditor = (m: MonthlySavingsEntry) => {
+    setMonthDraft({
+      key: m.key,
+      label: m.label,
+      self: String(selfShare(m)),
+      family: String(familyShare(m)),
+    });
+  };
+
+  const handleSaveMonthDraft = () => {
+    if (!monthDraft) return;
+    const self = Number(monthDraft.self);
+    const family = Number(monthDraft.family);
+    if (monthDraft.self.trim() === '' || monthDraft.family.trim() === '' || isNaN(self) || isNaN(family)) {
+      showNotification('Enter both amounts', 'error');
+      return;
+    }
+    const amount = self + family;
+    if (amount < 0) {
+      showNotification("Total can't be negative", 'error');
+      return;
+    }
+    const history = (metadata?.monthly_savings_history as MonthlySavingsEntry[]) || [];
+    const before = history.find(m => m.key === monthDraft.key);
+    if (!before) {
+      setMonthDraft(null);
+      return;
+    }
+    const next = history.map(m =>
+      m.key === monthDraft.key ? { ...m, self, family, amount, edited: true } : m,
+    );
+    // Both queued (offline-safe). A real rollover month was swept into the vault,
+    // so correcting it moves the vault by the same difference. Estimated months
+    // were never counted, and editing one doesn't change that.
+    updateMetadata({ monthly_savings_history: next });
+    const delta = amount - before.amount;
+    if (before.origin !== 'backfill' && delta !== 0) {
+      updateProfile({ total_savings: Math.max(0, totalSavings + delta) });
+    }
+    showNotification(`${monthDraft.label} savings updated`, 'success');
+    setMonthDraft(null);
+  };
 
   const goalsKey = initialGoals.map(g => `${g.id}:${g.deadline ?? ''}`).join(',');
   useEffect(() => {
@@ -512,6 +589,25 @@ export default function SavingsScreen() {
               <Text className="text-2xl font-bold text-ink tracking-tight">{format(totalSavings)}</Text>
               <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest">Total Vault</Text>
             </View>
+            {monthlySavings.length > 0 && (
+              <View className="flex-row gap-3 mb-4">
+                {SPEND_FOR_VALUES.map((scope: SpendFor) => {
+                  const value = scope === 'self' ? allTimeSelf : allTimeFamily;
+                  return (
+                    <View key={scope} className="flex-1 bg-app border border-line rounded-2xl p-3">
+                      <Text
+                        className="text-[10px] font-semibold uppercase tracking-widest mb-1"
+                        style={{ color: SPEND_FOR_COLOR[scope] }}
+                      >
+                        {SPEND_FOR_ICON[scope]} {SPEND_FOR_LABEL[scope]}
+                      </Text>
+                      <Text className={`text-base font-bold ${value < 0 ? 'text-rose-400' : 'text-ink'}`}>{signed(value)}</Text>
+                      <Text className="text-faint text-[9px] font-semibold uppercase tracking-widest mt-0.5">All-time</Text>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
             {monthlySavings.length === 0 ? (
               <View className="py-5 items-center">
                 <View className="w-14 h-14 bg-stone-800/50 rounded-2xl items-center justify-center mb-3">
@@ -522,8 +618,10 @@ export default function SavingsScreen() {
               </View>
             ) : (
               monthlySavings.map((m, idx) => (
-                <View
+                <TouchableOpacity
                   key={m.key}
+                  onPress={() => openMonthEditor(m)}
+                  activeOpacity={0.7}
                   className={`flex-row items-center justify-between py-3 ${idx === monthlySavings.length - 1 ? '' : 'border-b border-line'}`}
                 >
                   <View className="flex-row items-center flex-1">
@@ -538,14 +636,30 @@ export default function SavingsScreen() {
                             <Text className="text-violet-300 text-[9px] font-bold uppercase tracking-wider">Estimated</Text>
                           </View>
                         )}
+                        {m.edited && (
+                          <View className="ml-2 px-1.5 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30">
+                            <Text className="text-amber-300 text-[9px] font-bold uppercase tracking-wider">Edited</Text>
+                          </View>
+                        )}
                       </View>
                       <Text className="text-faint text-[10px] uppercase tracking-wider mt-0.5">
                         {new Date(m.date).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
                       </Text>
+                      <View className="flex-row mt-1">
+                        <Text className="text-[10px] font-semibold mr-3" style={{ color: SPEND_FOR_COLOR.self }}>
+                          {SPEND_FOR_ICON.self} {signed(selfShare(m))}
+                        </Text>
+                        <Text className="text-[10px] font-semibold" style={{ color: SPEND_FOR_COLOR.family }}>
+                          {SPEND_FOR_ICON.family} {signed(familyShare(m))}
+                        </Text>
+                      </View>
                     </View>
                   </View>
-                  <Text className={`text-sm font-bold ${m.origin === 'backfill' ? 'text-violet-300' : 'text-emerald-400'}`}>+ {format(m.amount)}</Text>
-                </View>
+                  <View className="flex-row items-center">
+                    <Text className={`text-sm font-bold ${m.origin === 'backfill' ? 'text-violet-300' : 'text-emerald-400'}`}>+ {format(m.amount)}</Text>
+                    <FontAwesome name="pencil" size={10} color={colors.faint} style={{ marginLeft: 8 }} />
+                  </View>
+                </TouchableOpacity>
               ))
             )}
             {monthlySavings.some(m => m.origin === 'backfill') && (
@@ -553,6 +667,9 @@ export default function SavingsScreen() {
                 Estimated months are rebuilt from your logged expenses using your current
                 budget, and are not counted in the Total Vault.
               </Text>
+            )}
+            {monthlySavings.length > 0 && (
+              <Text className="text-faint text-[10px] text-center mt-3 uppercase tracking-widest">Tap a month to edit</Text>
             )}
           </View>
 
@@ -765,6 +882,64 @@ export default function SavingsScreen() {
                 {savingGoal ? <ActivityIndicator color="white" /> : <Text className="text-white text-sm font-bold uppercase tracking-wider">{goalDraft?.id ? 'Update' : 'Add'}</Text>}
               </TouchableOpacity>
             </View>
+              </ScrollView>
+            </KeyboardAvoidingView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Monthly Savings Editor Modal */}
+      <Modal visible={!!monthDraft} animationType="slide" transparent={true} onRequestClose={() => setMonthDraft(null)}>
+        <Pressable onPress={() => setMonthDraft(null)} style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.8)' }}>
+          <Pressable onPress={() => {}} className="bg-surface rounded-t-3xl border-t border-line" style={{ maxHeight: '75%' }}>
+            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+              <ScrollView
+                bounces={false}
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={{ padding: 24, paddingBottom: 36 }}
+                showsVerticalScrollIndicator={false}
+              >
+                <TouchableOpacity onPress={() => setMonthDraft(null)} activeOpacity={0.6} className="self-center mb-6 py-2 px-8">
+                  <View className="w-12 h-1.5 bg-faint rounded-full" />
+                </TouchableOpacity>
+                <Text className="text-base font-bold text-ink tracking-tight mb-1">Edit {monthDraft?.label}</Text>
+                <Text className="text-muted text-sm mb-5">Correct how much was saved for Self and Family</Text>
+
+                <View className="flex-row gap-3 mb-3">
+                  {SPEND_FOR_VALUES.map((scope: SpendFor) => (
+                    <View key={scope} className="flex-1 bg-app rounded-2xl px-4 py-3 border border-line">
+                      <Text
+                        className="text-[11px] font-semibold uppercase tracking-widest mb-1"
+                        style={{ color: SPEND_FOR_COLOR[scope] }}
+                      >
+                        {SPEND_FOR_ICON[scope]} {SPEND_FOR_LABEL[scope]}
+                      </Text>
+                      <View className="flex-row items-center">
+                        <Text className="text-muted text-sm font-semibold mr-2">{symbol}</Text>
+                        <TextInput
+                          placeholder="0"
+                          placeholderTextColor={colors.muted}
+                          keyboardType="numbers-and-punctuation"
+                          value={monthDraft?.[scope] ?? ''}
+                          onChangeText={v => setMonthDraft(d => d && { ...d, [scope]: v.replace(/[^0-9.-]/g, '') })}
+                          className="flex-1 text-ink text-base font-bold tracking-tight"
+                        />
+                      </View>
+                    </View>
+                  ))}
+                </View>
+                <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-5 ml-1">
+                  Total {signed((Number(monthDraft?.self) || 0) + (Number(monthDraft?.family) || 0))}
+                </Text>
+
+                <View className="flex-row gap-3">
+                  <TouchableOpacity onPress={() => setMonthDraft(null)} className="flex-1 py-4 rounded-2xl bg-elevated items-center">
+                    <Text className="text-ink text-sm font-semibold uppercase tracking-wider">Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={handleSaveMonthDraft} className="flex-1 py-4 rounded-2xl bg-emerald-600 items-center">
+                    <Text className="text-white text-sm font-bold uppercase tracking-wider">Update</Text>
+                  </TouchableOpacity>
+                </View>
               </ScrollView>
             </KeyboardAvoidingView>
           </Pressable>

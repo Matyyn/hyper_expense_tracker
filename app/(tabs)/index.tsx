@@ -57,6 +57,7 @@ import { useUserMetadata, useUpdateMetadata } from "../../hooks/useUserMetadata"
 import { SyncStatusIcon } from "../../components/SyncStatusIcon";
 import {
   MonthlySavingsEntry,
+  allocationOf,
   leftoverOf,
   mergeMonthlySavings,
   monthKey,
@@ -450,6 +451,10 @@ export default function Dashboard() {
         (profile?.monthly_budget as number | undefined) ??
         ((metadata?.monthly_budget as number) || 0);
       const anchorDay = budgetExpiryDate.getDate();
+      const alloc = allocationOf(
+        metadata?.spend_for_budgets as { self?: number; family?: number } | undefined,
+        base,
+      );
 
       let periodStart = metadata?.budget_period_start
         ? new Date(metadata.budget_period_start as string)
@@ -459,13 +464,14 @@ export default function Dashboard() {
       // One query covering every closed period, sliced per-period in memory.
       const { data: periodExpenses, error } = await supabase
         .from("expenses")
-        .select("amount, category, created_at")
+        .select("*")
         .eq("user_id", user!.id)
         .gte("created_at", periodStart.toISOString());
       if (error) throw error;
       const rows = (periodExpenses || []).map((e) => ({
         amount: Number(e.amount) || 0,
         category: e.category as string,
+        spend_for: e.spend_for as string | null | undefined,
         at: new Date(e.created_at as string).getTime(),
       }));
 
@@ -485,9 +491,10 @@ export default function Dashboard() {
       for (let guard = 0; periodEnd.getTime() < now && guard < 240; guard++) {
         const from = periodStart.getTime();
         const to = periodEnd.getTime();
-        const { amount } = leftoverOf(
+        const { amount, self, family } = leftoverOf(
           rows.filter((e) => e.at >= from && e.at <= to),
           base,
+          alloc,
         );
         const key = monthKey(periodEnd);
         if (!seen.has(key)) {
@@ -498,6 +505,8 @@ export default function Dashboard() {
             amount,
             date: periodEnd.toISOString(),
             origin: "rollover",
+            self,
+            family,
           });
           sweptTotal += amount;
         }
