@@ -42,9 +42,13 @@ const EMPTY_DRAFT: GoalDraft = { name: '', target: '', current: '0', deadline: '
 interface MonthDraft {
   key: string;
   label: string;
+  total: string;
   self: string;
   family: string;
 }
+
+// Two-decimal string for a recalculated share, without float noise.
+const amountText = (n: number) => String(Math.round(n * 100) / 100);
 
 // Entries written before the Self/Family split have no shares yet; until a
 // Rescan fills them in, the whole amount reads as Self.
@@ -331,8 +335,22 @@ export default function SavingsScreen() {
     setMonthDraft({
       key: m.key,
       label: m.label,
-      self: String(selfShare(m)),
-      family: String(familyShare(m)),
+      total: amountText(selfShare(m) + familyShare(m)),
+      self: amountText(selfShare(m)),
+      family: amountText(familyShare(m)),
+    });
+  };
+
+  // Self + Family always add up to Total: editing one share recalculates the
+  // other, and editing Total keeps Family and recalculates Self.
+  const editMonthDraft = (field: 'total' | SpendFor, raw: string) => {
+    const v = raw.replace(/[^0-9.-]/g, '');
+    setMonthDraft(d => {
+      if (!d) return d;
+      const n = Number(v) || 0;
+      if (field === 'total') return { ...d, total: v, self: amountText(n - (Number(d.family) || 0)) };
+      const other: SpendFor = field === 'self' ? 'family' : 'self';
+      return { ...d, [field]: v, [other]: amountText((Number(d.total) || 0) - n) };
     });
   };
 
@@ -890,9 +908,11 @@ export default function SavingsScreen() {
 
       {/* Monthly Savings Editor Modal */}
       <Modal visible={!!monthDraft} animationType="slide" transparent={true} onRequestClose={() => setMonthDraft(null)}>
+        {/* 'padding' on Android too: the app is edge-to-edge, so the window no
+            longer resizes for the keyboard and the sheet has to lift itself. */}
+        <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
         <Pressable onPress={() => setMonthDraft(null)} style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.8)' }}>
-          <Pressable onPress={() => {}} className="bg-surface rounded-t-3xl border-t border-line" style={{ maxHeight: '75%' }}>
-            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <Pressable onPress={() => {}} className="bg-surface rounded-t-3xl border-t border-line" style={{ maxHeight: '85%' }}>
               <ScrollView
                 bounces={false}
                 keyboardShouldPersistTaps="handled"
@@ -903,9 +923,22 @@ export default function SavingsScreen() {
                   <View className="w-12 h-1.5 bg-faint rounded-full" />
                 </TouchableOpacity>
                 <Text className="text-base font-bold text-ink tracking-tight mb-1">Edit {monthDraft?.label}</Text>
-                <Text className="text-muted text-sm mb-5">Correct how much was saved for Self and Family</Text>
+                <Text className="text-muted text-sm mb-5">Change one share and the other adjusts to keep the total</Text>
 
-                <View className="flex-row gap-3 mb-3">
+                <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2 ml-1">Total Saved</Text>
+                <View className="flex-row items-center bg-app rounded-2xl px-4 py-3 border border-line mb-3">
+                  <Text className="text-muted text-sm font-semibold mr-3">{symbol}</Text>
+                  <TextInput
+                    placeholder="0"
+                    placeholderTextColor={colors.muted}
+                    keyboardType="numbers-and-punctuation"
+                    value={monthDraft?.total ?? ''}
+                    onChangeText={v => editMonthDraft('total', v)}
+                    className="flex-1 text-emerald-400 text-base font-bold tracking-tight"
+                  />
+                </View>
+
+                <View className="flex-row gap-3 mb-5">
                   {SPEND_FOR_VALUES.map((scope: SpendFor) => (
                     <View key={scope} className="flex-1 bg-app rounded-2xl px-4 py-3 border border-line">
                       <Text
@@ -921,16 +954,13 @@ export default function SavingsScreen() {
                           placeholderTextColor={colors.muted}
                           keyboardType="numbers-and-punctuation"
                           value={monthDraft?.[scope] ?? ''}
-                          onChangeText={v => setMonthDraft(d => d && { ...d, [scope]: v.replace(/[^0-9.-]/g, '') })}
+                          onChangeText={v => editMonthDraft(scope, v)}
                           className="flex-1 text-ink text-base font-bold tracking-tight"
                         />
                       </View>
                     </View>
                   ))}
                 </View>
-                <Text className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-5 ml-1">
-                  Total {signed((Number(monthDraft?.self) || 0) + (Number(monthDraft?.family) || 0))}
-                </Text>
 
                 <View className="flex-row gap-3">
                   <TouchableOpacity onPress={() => setMonthDraft(null)} className="flex-1 py-4 rounded-2xl bg-elevated items-center">
@@ -941,9 +971,9 @@ export default function SavingsScreen() {
                   </TouchableOpacity>
                 </View>
               </ScrollView>
-            </KeyboardAvoidingView>
           </Pressable>
         </Pressable>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Loans List Modal */}
